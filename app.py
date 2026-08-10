@@ -16,7 +16,7 @@ DB = os.getenv("DATABASE_PATH", os.path.join(os.path.dirname(__file__), "aduan.d
 
 ID = {
  "Overview":"Ringkasan","Service intelligence at a glance":"Ringkasan kinerja layanan",
- "Complaints":"Aduan","Users":"Pengguna","Settings":"Pengaturan","Sign out":"Keluar",
+ "Complaints":"Aduan","Users":"Pengguna","Settings":"Pengaturan","Complaint Flow":"Alur Aduan","Reports":"Laporan","Sign out":"Keluar",
  "MPWA channel":"Kanal MPWA","All complaints":"Semua aduan","Across every channel":"Dari seluruh kanal",
  "New intake":"Aduan baru","Needs triage":"Perlu diverifikasi","In progress":"Sedang diproses",
  "Being handled":"Dalam penanganan","Resolved":"Terselesaikan","Completed cases":"Aduan selesai",
