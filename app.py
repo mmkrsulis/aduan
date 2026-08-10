@@ -206,10 +206,13 @@ def ticket(tid):
         elif action in ("reply","note"):
             body=request.form["body"].strip(); internal=action=="note"
             if body:
-                db().execute("INSERT INTO messages(ticket_id,direction,body,sender,internal) VALUES(?,?,?,?,?)",(tid,"out",body,session["name"],internal)); db().execute("UPDATE tickets SET updated_at=CURRENT_TIMESTAMP WHERE id=?",(tid,)); db().commit()
-                if not internal:
+                if internal:
+                    db().execute("INSERT INTO messages(ticket_id,direction,body,sender,internal) VALUES(?,?,?,?,1)",(tid,"out",body,session["name"])); db().execute("UPDATE tickets SET updated_at=CURRENT_TIMESTAMP WHERE id=?",(tid,)); db().commit(); audit("note.added","ticket",tid)
+                else:
                     ok,msg=send_mpwa(t["phone"],body); flash(msg,"success" if ok else "error")
-                audit("note.added" if internal else "reply.sent","ticket",tid)
+                    if ok:
+                        db().execute("INSERT INTO messages(ticket_id,direction,body,sender,internal) VALUES(?,?,?,?,0)",(tid,"out",body,session["name"])); db().execute("UPDATE tickets SET updated_at=CURRENT_TIMESTAMP WHERE id=?",(tid,)); db().commit(); audit("reply.sent","ticket",tid)
+                    else: audit("reply.failed","ticket",tid,{"reason":msg})
         elif action=="forward":
             unit=db().execute("SELECT * FROM units WHERE id=? AND org_id=? AND active=1",(request.form.get("unit_id"),session["org_id"])).fetchone()
             if unit and unit["officer_phone"]:
@@ -228,7 +231,12 @@ def send_mpwa(phone,body):
     org=db().execute("SELECT * FROM organizations WHERE id=?",(session["org_id"],)).fetchone(); base=org["mpwa_url"] or os.getenv("MPWA_BASE_URL",""); key=org["mpwa_key"] or os.getenv("MPWA_API_KEY",""); sender=org["mpwa_sender"] or os.getenv("MPWA_SENDER","")
     if not (base and key and sender): return False,"Reply saved; configure MPWA credentials to transmit it."
     try:
-        r=requests.post(base.rstrip("/")+"/api/send-message",data={"api_key":key,"sender":sender,"number":phone,"message":body},timeout=15); return r.ok,("Message sent through MPWA." if r.ok else f"MPWA rejected the message ({r.status_code}).")
+        r=requests.post(base.rstrip("/")+"/send-message",data={"api_key":key,"sender":sender,"number":phone,"message":body},timeout=15)
+        try: payload=r.json()
+        except ValueError: payload={}
+        ok=r.ok and payload.get("status") is True
+        message=payload.get("msg") or payload.get("message")
+        return ok,("Message sent through MPWA." if ok else (message or f"MPWA rejected the message ({r.status_code})."))
     except requests.RequestException as e: return False,f"MPWA connection failed: {e}"
 
 @app.route("/users",methods=["GET","POST"])
