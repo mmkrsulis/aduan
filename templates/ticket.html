@@ -1,0 +1,25 @@
+{% extends 'base.html' %}
+{% block title %}{{t.code}} · AduanHub{% endblock %}
+{% block heading %}{{t.code}}{% endblock %}
+{% block subheading %}{{t.subject}}{% endblock %}
+{% block content %}
+<div class="case-layout">
+  <div class="panel conversation">
+    <div class="contact-head"><div class="avatar">{{t.contact[0]}}</div><div><b>{{t.contact}}</b><span>{{t.phone}} · {{t.location or tr('Location not provided')}}</span></div><span class="badge {{t.status}}">{{tr(t.status|replace('_',' '))}}</span></div>
+    <div class="messages">{% for m in msgs %}<div class="message {{m.direction}} {% if m.internal %}internal{% endif %}"><small>{{tr('Internal note') if m.internal else m.sender}} · {{m.created_at}}</small><p>{{m.body}}</p></div>{% endfor %}</div>
+    <form method="post" class="composer"><textarea name="body" required placeholder="{{tr('Write a reply or internal note…')}}"></textarea><div><button name="action" value="note" class="secondary">{{tr('Add internal note')}}</button><button name="action" value="reply" class="primary"><span data-icon="send"></span>{{tr('Reply')}}</button></div></form>
+  </div>
+  <form method="post" class="panel details">
+    <div class="panel-head"><h3>{{tr('Case details')}}</h3></div>
+    <label>{{tr('Status')}}<select name="status">{% for s in statuses %}<option {% if t.status==s %}selected{% endif %} value="{{s}}">{{tr(s|replace('_',' '))|title}}</option>{% endfor %}</select></label>
+    <label>{{tr('Priority')}}<select name="priority">{% for p in ['low','normal','high','urgent'] %}<option value="{{p}}" {% if t.priority==p %}selected{% endif %}>{{tr(p)}}</option>{% endfor %}</select></label>
+    <label>{{tr('Category')}}<input name="category" value="{{t.category}}"></label>
+    <label>{{tr('Responsible unit')}}<select name="unit"><option value="">{{tr('Unassigned')}}</option>{% for unit in units %}<option {% if t.unit==unit.name %}selected{% endif %}>{{unit.name}}</option>{% endfor %}</select></label>
+    <label>{{tr('Assignee')}}<select name="assignee"><option value="">{{tr('Unassigned')}}</option>{% for u in users %}<option value="{{u.id}}" {% if t.assignee_id==u.id %}selected{% endif %}>{{u.name}} · {{u.role}}</option>{% endfor %}</select></label>
+    <button name="action" value="update" class="primary wide">{{tr('Save changes')}}</button>
+    <div class="panel-head"><div><h3>Forward to officer</h3><p>Send the complaint summary through MPWA</p></div></div>
+    <label>Responsible officer<select name="unit_id"><option value="">Select unit</option>{% for unit in units %}<option value="{{unit.id}}">{{unit.name}} · {{unit.officer_name or 'Officer'}} · {{unit.officer_phone or 'No WhatsApp'}}</option>{% endfor %}</select></label>
+    <button name="action" value="forward" class="secondary wide">Forward to officer WhatsApp</button>
+  </form>
+</div>
+{% endblock %}

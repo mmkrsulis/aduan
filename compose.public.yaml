@@ -1,0 +1,26 @@
+services:
+  aduan-hub:
+    environment:
+      COOKIE_SECURE: "true"
+  caddy:
+    image: caddy:2.10-alpine
+    container_name: aduan-hub-proxy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      APP_DOMAIN: ${APP_DOMAIN:?Set APP_DOMAIN in .env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - aduan_net
+    depends_on:
+      aduan-hub:
+        condition: service_healthy
+volumes:
+  caddy_data:
+  caddy_config:
