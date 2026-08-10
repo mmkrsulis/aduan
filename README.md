@@ -23,6 +23,8 @@ sudo docker compose -f compose.yaml -f compose.public.yaml up -d --build
 
 The public overlay uses Caddy for automatic TLS, HTTP/3, compression, HSTS, and structured access logs. Keep `WEBHOOK_SECRET` private and include it in the MPWA device webhook query string.
 
+For the current host-Nginx deployment, use `deploy/nginx-aduanhub.rekadev.site.conf`. The live demo hostname is `https://aduanhub.rekadev.site`.
+
 ## Complaint flow and reports
 
 - Configure bilingual autoreplies under **Settings → Complaint Flow**.
