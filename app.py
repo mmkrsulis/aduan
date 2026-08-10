@@ -123,6 +123,7 @@ def init_db():
             "Aduan Anda telah tercatat dengan nomor {code}. Simpan nomor ini untuk memeriksa status aduan.",
             "Your complaint has been registered as {code}. Keep this number to check its status."
         ))
+    con.execute("UPDATE flow_configs SET office_hours='Senin–Jumat, 08.00–16.00' WHERE office_hours='Monday-Friday, 08:00-16:00'")
     con.commit(); con.close()
 
 def login_required(fn):

@@ -15,3 +15,4 @@ body.dark .message p{background:#1d2128;color:var(--text)}
 body.dark .message.out p{background:var(--accent);color:#fff}
 .section-heading-actions{display:flex;align-items:center;gap:9px}.section-heading-actions a{text-decoration:none;white-space:nowrap}
 @media(max-width:900px){.section-heading-actions{align-items:flex-end;flex-direction:column}}
+.preview-card{position:relative!important;inset:auto!important;width:auto!important;height:auto!important;padding:0!important;display:block!important;z-index:auto!important}.preview-card .phone-preview{max-height:360px;overflow:auto}.preview-card #preview{overflow-wrap:anywhere}.preview-card .variable-help{overflow:hidden}.preview-card .variable-help code{white-space:normal;overflow-wrap:anywhere}
