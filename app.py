@@ -126,6 +126,7 @@ def init_db():
             "Your complaint has been registered as {code}. Keep this number to check its status."
         ))
     con.execute("UPDATE flow_configs SET office_hours='Senin–Jumat, 08.00–16.00' WHERE office_hours='Monday-Friday, 08:00-16:00'")
+    con.execute("UPDATE units SET active=1")
     con.commit(); con.close()
 
 def login_required(fn):
@@ -220,7 +221,7 @@ def ticket(tid):
                     audit("ticket.forwarded","ticket",tid,{"unit":unit["name"],"officer":unit["officer_name"]})
             else: flash("The selected unit has no officer WhatsApp number.","error")
         db().commit(); return redirect(url_for("ticket",tid=tid))
-    msgs=db().execute("SELECT * FROM messages WHERE ticket_id=? ORDER BY created_at",(tid,)).fetchall(); users=db().execute("SELECT * FROM users WHERE org_id=? AND active=1 ORDER BY name",(session["org_id"],)).fetchall(); units=db().execute("SELECT * FROM units WHERE org_id=? AND active=1 ORDER BY name",(session["org_id"],)).fetchall()
+    msgs=db().execute("SELECT * FROM messages WHERE ticket_id=? ORDER BY created_at",(tid,)).fetchall(); users=db().execute("SELECT * FROM users WHERE org_id=? AND active=1 ORDER BY name",(session["org_id"],)).fetchall(); units=db().execute("SELECT * FROM units WHERE org_id=? ORDER BY name",(session["org_id"],)).fetchall()
     return render_template("ticket.html",t=t,msgs=msgs,users=users,units=units)
 
 def send_mpwa(phone,body):
@@ -252,7 +253,7 @@ def toggle_user(uid):
 def settings():
     if request.method=="POST":
         db().execute("UPDATE organizations SET name=?,accent=?,terminology=?,mpwa_url=?,mpwa_key=?,mpwa_sender=? WHERE id=?",(request.form["name"],request.form["accent"],request.form["terminology"],request.form["mpwa_url"],request.form["mpwa_key"],request.form["mpwa_sender"],session["org_id"])); db().commit(); session["org_name"]=request.form["name"]; audit("organization.updated","organization",session["org_id"]); flash("Settings saved","success")
-    org=db().execute("SELECT * FROM organizations WHERE id=?",(session["org_id"],)).fetchone(); units=db().execute("SELECT * FROM units WHERE org_id=? ORDER BY active DESC,name",(session["org_id"],)).fetchall(); return render_template("settings.html",org=org,units=units)
+    org=db().execute("SELECT * FROM organizations WHERE id=?",(session["org_id"],)).fetchone(); units=db().execute("SELECT * FROM units WHERE org_id=? ORDER BY name",(session["org_id"],)).fetchall(); return render_template("settings.html",org=org,units=units)
 
 @app.post("/units")
 @login_required
@@ -263,11 +264,26 @@ def create_unit():
     except sqlite3.IntegrityError: flash("Unit name already exists","error")
     return redirect(url_for("settings"))
 
+@app.post("/units/<int:unit_id>/update")
+@login_required
+@roles("owner","admin")
+def update_unit(unit_id):
+    unit=db().execute("SELECT * FROM units WHERE id=? AND org_id=?",(unit_id,session["org_id"])).fetchone()
+    if not unit: return ("Not found",404)
+    name=request.form["name"].strip(); officer=request.form.get("officer_name","").strip(); phone=request.form.get("officer_phone","").strip()
+    if not name: flash("Unit name is required","error"); return redirect(url_for("settings")+"#units")
+    try:
+        db().execute("UPDATE units SET name=?,officer_name=?,officer_phone=?,active=1 WHERE id=? AND org_id=?",(name,officer,phone,unit_id,session["org_id"])); db().execute("UPDATE tickets SET unit=? WHERE org_id=? AND unit=?",(name,session["org_id"],unit["name"])); db().commit(); audit("unit.updated","unit",unit_id,{"old_name":unit["name"],"new_name":name}); flash("Responsible unit updated","success")
+    except sqlite3.IntegrityError: flash("Unit name already exists","error")
+    return redirect(url_for("settings")+"#units")
+
 @app.post("/units/<int:unit_id>/delete")
 @login_required
 @roles("owner","admin")
 def delete_unit(unit_id):
-    db().execute("UPDATE units SET active=0 WHERE id=? AND org_id=?",(unit_id,session["org_id"])); db().commit(); audit("unit.disabled","unit",unit_id); return redirect(url_for("settings"))
+    unit=db().execute("SELECT name FROM units WHERE id=? AND org_id=?",(unit_id,session["org_id"])).fetchone()
+    if not unit: return ("Not found",404)
+    db().execute("DELETE FROM units WHERE id=? AND org_id=?",(unit_id,session["org_id"])); db().commit(); audit("unit.deleted","unit",unit_id,{"name":unit["name"]}); flash("Responsible unit deleted","success"); return redirect(url_for("settings")+"#units")
 
 def report_rows():
     where=["t.org_id=?"]; params=[session["org_id"]]
