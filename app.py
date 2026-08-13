@@ -1,5 +1,5 @@
 import os, sqlite3, json, secrets, csv, io, base64, uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from functools import wraps
 from flask import Flask, render_template, request, redirect, url_for, session, flash, jsonify, g, Response, send_file, send_from_directory
 from werkzeug.utils import secure_filename
@@ -15,7 +15,7 @@ from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, 
 app = Flask(__name__)
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
 app.secret_key = os.getenv("SECRET_KEY", secrets.token_hex(32))
-app.config.update(MAX_CONTENT_LENGTH=8*1024*1024,SESSION_COOKIE_HTTPONLY=True,SESSION_COOKIE_SAMESITE="Lax",SESSION_COOKIE_SECURE=os.getenv("COOKIE_SECURE","false").lower()=="true",PERMANENT_SESSION_LIFETIME=28800)
+app.config.update(MAX_CONTENT_LENGTH=8*1024*1024,SESSION_COOKIE_HTTPONLY=True,SESSION_COOKIE_SAMESITE="Lax",SESSION_COOKIE_SECURE=os.getenv("COOKIE_SECURE","false").lower()=="true",PERMANENT_SESSION_LIFETIME=timedelta(days=30))
 DB = os.getenv("DATABASE_PATH", os.path.join(os.path.dirname(__file__), "aduan.db"))
 UPLOAD_DIR = os.getenv("UPLOAD_DIR", os.path.join(os.path.dirname(DB), "uploads"))
 ALLOWED_MEDIA = {"image/jpeg":"jpg","image/png":"png","image/webp":"webp","video/mp4":"mp4","audio/mpeg":"mp3","audio/ogg":"ogg","application/pdf":"pdf"}
@@ -188,7 +188,11 @@ def ctx():
             parsed=datetime.fromisoformat(str(value).replace("Z","+00:00")); parsed=parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed
             return parsed.astimezone(ZoneInfo((brand["timezone"] if brand else None) or "UTC")).strftime("%d %b %Y, %H:%M:%S")
         except (ValueError,TypeError,KeyError): return str(value)
-    return {"me":session,"brand":brand,"now":datetime.utcnow(),"statuses":["new","verified","assigned","in_progress","waiting","resolved","closed"],"tr":tr,"lang":session.get("lang","en"),"unread":unread,"csrf_token":csrf_token,"localdt":localdt}
+    def localdate(value):
+        formatted=localdt(value)
+        try: return datetime.strptime(formatted,"%d %b %Y, %H:%M:%S").strftime("%d %b %Y")
+        except ValueError: return formatted
+    return {"me":session,"brand":brand,"now":datetime.utcnow(),"statuses":["new","verified","assigned","in_progress","waiting","resolved","closed"],"tr":tr,"lang":session.get("lang","en"),"unread":unread,"csrf_token":csrf_token,"localdt":localdt,"localdate":localdate}
 
 def store_upload(file=None, payload=None, original_name=None, mime=None):
     if file:
@@ -220,7 +224,7 @@ def login():
     if request.method=="POST":
         u=db().execute("SELECT u.*,o.name org_name FROM users u JOIN organizations o ON o.id=u.org_id WHERE email=? AND active=1",(request.form["email"].lower(),)).fetchone()
         if u and check_password_hash(u["password"],request.form["password"]):
-            session.clear(); session.update(uid=u["id"],org_id=u["org_id"],name=u["name"],role=u["role"],org_name=u["org_name"]); db().execute("UPDATE users SET last_login=CURRENT_TIMESTAMP WHERE id=?",(u["id"],)); db().commit(); return redirect(url_for("dashboard"))
+            remember=request.form.get("remember")=="1"; session.clear(); session.permanent=remember; session.update(uid=u["id"],org_id=u["org_id"],name=u["name"],role=u["role"],org_name=u["org_name"]); db().execute("UPDATE users SET last_login=CURRENT_TIMESTAMP WHERE id=?",(u["id"],)); db().commit(); return redirect(url_for("dashboard"))
         flash("Invalid credentials","error")
     login_brand=db().execute("SELECT name,logo,icon,accent,terminology FROM organizations ORDER BY id LIMIT 1").fetchone()
     return render_template("login.html",login_brand=login_brand)
