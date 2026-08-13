@@ -14,7 +14,7 @@
     <div class="panel-head"><h3>{{tr('Case details')}}</h3></div>
     <label>{{tr('Status')}}<select name="status">{% for s in statuses %}<option {% if t.status==s %}selected{% endif %} value="{{s}}">{{tr(s|replace('_',' '))|title}}</option>{% endfor %}</select></label>
     <label>{{tr('Priority')}}<select name="priority">{% for p in ['low','normal','high','urgent'] %}<option value="{{p}}" {% if t.priority==p %}selected{% endif %}>{{tr(p)}}</option>{% endfor %}</select></label>
-    <label>{{tr('Category')}}<input name="category" value="{{t.category}}"></label>
+    <fieldset class="category-picker"><legend>{{tr('Category')}}</legend><div>{% for category in categories %}<label><input type="radio" name="category" value="{{category.name}}" {% if t.category==category.name %}checked{% endif %}><span>{{category.name}}</span></label>{% endfor %}</div><label class="new-category">+ {{'Kategori baru' if lang=='id' else 'New category'}}<input name="new_category" placeholder="{{'Ketik nama jika belum tersedia' if lang=='id' else 'Enter a name if unavailable'}}"></label></fieldset>
     <label>{{tr('Responsible unit')}}<select name="unit"><option value="">{{tr('Unassigned')}}</option>{% for unit in units %}<option {% if t.unit==unit.name %}selected{% endif %}>{{unit.name}}</option>{% endfor %}</select></label>
     <label>{{tr('Assignee')}}<select name="assignee"><option value="">{{tr('Unassigned')}}</option>{% for u in users %}<option value="{{u.id}}" {% if t.assignee_id==u.id %}selected{% endif %}>{{u.name}} · {{u.role}}</option>{% endfor %}</select></label>
     <button name="action" value="update" class="primary wide">{{tr('Save changes')}}</button>

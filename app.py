@@ -77,6 +77,7 @@ CREATE TABLE IF NOT EXISTS tickets(id INTEGER PRIMARY KEY, org_id INTEGER NOT NU
 CREATE TABLE IF NOT EXISTS messages(id INTEGER PRIMARY KEY, ticket_id INTEGER NOT NULL, direction TEXT NOT NULL, body TEXT NOT NULL, sender TEXT, internal INTEGER DEFAULT 0, attachment_path TEXT, attachment_name TEXT, attachment_type TEXT, delivery_status TEXT DEFAULT 'received', created_at TEXT DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(ticket_id) REFERENCES tickets(id) ON DELETE CASCADE);
 CREATE TABLE IF NOT EXISTS audit_logs(id INTEGER PRIMARY KEY, org_id INTEGER NOT NULL, user_id INTEGER, action TEXT NOT NULL, entity TEXT, entity_id INTEGER, metadata TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS units(id INTEGER PRIMARY KEY, org_id INTEGER NOT NULL, name TEXT NOT NULL, officer_name TEXT, officer_phone TEXT, active INTEGER DEFAULT 1, created_at TEXT DEFAULT CURRENT_TIMESTAMP, UNIQUE(org_id,name), FOREIGN KEY(org_id) REFERENCES organizations(id));
+CREATE TABLE IF NOT EXISTS categories(id INTEGER PRIMARY KEY, org_id INTEGER NOT NULL, name TEXT NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP, UNIQUE(org_id,name), FOREIGN KEY(org_id) REFERENCES organizations(id));
 CREATE TABLE IF NOT EXISTS notifications(id INTEGER PRIMARY KEY, org_id INTEGER NOT NULL, user_id INTEGER, ticket_id INTEGER, title TEXT NOT NULL, body TEXT, read_at TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(org_id) REFERENCES organizations(id), FOREIGN KEY(user_id) REFERENCES users(id), FOREIGN KEY(ticket_id) REFERENCES tickets(id));
 CREATE TABLE IF NOT EXISTS flow_configs(id INTEGER PRIMARY KEY, org_id INTEGER UNIQUE NOT NULL, enabled INTEGER DEFAULT 1, default_language TEXT DEFAULT 'id', welcome_id TEXT, welcome_en TEXT, service_info_id TEXT, service_info_en TEXT, confirmation_id TEXT, confirmation_en TEXT, completion_id TEXT, completion_en TEXT, forward_template_id TEXT, forward_template_en TEXT, status_template_id TEXT, status_template_en TEXT, unavailable_id TEXT, unavailable_en TEXT, menu_items TEXT DEFAULT '[]', ai_enabled INTEGER DEFAULT 0, ai_prompt TEXT, ai_confidence REAL DEFAULT .8, session_timeout_minutes INTEGER DEFAULT 30, office_hours TEXT DEFAULT 'Monday-Friday, 08:00-16:00', updated_at TEXT DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(org_id) REFERENCES organizations(id));
 CREATE TABLE IF NOT EXISTS conversation_states(id INTEGER PRIMARY KEY, org_id INTEGER NOT NULL, phone TEXT NOT NULL, step TEXT NOT NULL DEFAULT 'menu', language TEXT DEFAULT 'id', data TEXT DEFAULT '{}', human_takeover INTEGER DEFAULT 0, updated_at TEXT DEFAULT CURRENT_TIMESTAMP, UNIQUE(org_id,phone), FOREIGN KEY(org_id) REFERENCES organizations(id));
@@ -145,6 +146,7 @@ def init_db():
         ))
     con.execute("UPDATE flow_configs SET office_hours='Senin–Jumat, 08.00–16.00' WHERE office_hours='Monday-Friday, 08:00-16:00'")
     con.execute("UPDATE organizations SET ticket_prefix=upper(substr(slug,1,3)) WHERE ticket_prefix IS NULL OR ticket_prefix='' OR ticket_prefix='ADU'")
+    con.execute("INSERT OR IGNORE INTO categories(org_id,name) SELECT org_id,category FROM tickets WHERE category IS NOT NULL AND trim(category)<>''")
     con.execute("""UPDATE flow_configs SET
       forward_template_id=COALESCE(forward_template_id,'Aduan baru ditugaskan\n{code} — {description}\nPelapor: {name}\nLokasi: {location}\nPrioritas: {priority}\nMohon koordinasikan tindak lanjut dengan layanan aduan.'),
       forward_template_en=COALESCE(forward_template_en,'New complaint assigned\n{code} — {description}\nReporter: {name}\nLocation: {location}\nPriority: {priority}\nPlease coordinate the follow-up with the complaint desk.'),
@@ -271,8 +273,9 @@ def ticket(tid):
     if request.method=="POST":
         action=request.form.get("action")
         if action=="update":
-            new_status=request.form["status"]
-            db().execute("UPDATE tickets SET status=?,priority=?,category=?,unit=?,assignee_id=?,updated_at=CURRENT_TIMESTAMP,closed_at=CASE WHEN ? IN ('resolved','closed') THEN COALESCE(closed_at,CURRENT_TIMESTAMP) ELSE NULL END WHERE id=?",(new_status,request.form["priority"],request.form["category"],request.form["unit"],request.form.get("assignee") or None,new_status,tid)); audit("ticket.updated","ticket",tid,{"status":new_status})
+            new_status=request.form["status"]; new_category=request.form.get("new_category","").strip()[:80]; category=new_category or request.form.get("category","").strip() or "General"
+            db().execute("INSERT OR IGNORE INTO categories(org_id,name) VALUES(?,?)",(session["org_id"],category))
+            db().execute("UPDATE tickets SET status=?,priority=?,category=?,unit=?,assignee_id=?,updated_at=CURRENT_TIMESTAMP,closed_at=CASE WHEN ? IN ('resolved','closed') THEN COALESCE(closed_at,CURRENT_TIMESTAMP) ELSE NULL END WHERE id=?",(new_status,request.form["priority"],category,request.form["unit"],request.form.get("assignee") or None,new_status,tid)); audit("ticket.updated","ticket",tid,{"status":new_status,"category":category})
         elif action in ("reply","note"):
             body=request.form["body"].strip(); internal=action=="note"
             attachment=request.files.get("attachment"); stored=None
@@ -303,8 +306,8 @@ def ticket(tid):
                     audit("ticket.forwarded","ticket",tid,{"unit":unit["name"],"officer":unit["officer_name"]})
             else: flash("The selected unit has no officer WhatsApp number.","error")
         db().commit(); return redirect(url_for("ticket",tid=tid))
-    msgs=db().execute("SELECT * FROM messages WHERE ticket_id=? ORDER BY created_at",(tid,)).fetchall(); users=db().execute("SELECT * FROM users WHERE org_id=? AND active=1 ORDER BY name",(session["org_id"],)).fetchall(); units=db().execute("SELECT * FROM units WHERE org_id=? ORDER BY name",(session["org_id"],)).fetchall(); activities=db().execute("SELECT a.*,u.name user_name FROM audit_logs a LEFT JOIN users u ON u.id=a.user_id WHERE a.org_id=? AND a.entity='ticket' AND a.entity_id=? ORDER BY a.created_at DESC LIMIT 20",(session["org_id"],tid)).fetchall()
-    return render_template("ticket.html",t=t,msgs=msgs,users=users,units=units,activities=activities)
+    msgs=db().execute("SELECT * FROM messages WHERE ticket_id=? ORDER BY created_at",(tid,)).fetchall(); users=db().execute("SELECT * FROM users WHERE org_id=? AND active=1 ORDER BY name",(session["org_id"],)).fetchall(); units=db().execute("SELECT * FROM units WHERE org_id=? ORDER BY name",(session["org_id"],)).fetchall(); categories=db().execute("SELECT * FROM categories WHERE org_id=? ORDER BY name",(session["org_id"],)).fetchall(); activities=db().execute("SELECT a.*,u.name user_name FROM audit_logs a LEFT JOIN users u ON u.id=a.user_id WHERE a.org_id=? AND a.entity='ticket' AND a.entity_id=? ORDER BY a.created_at DESC LIMIT 20",(session["org_id"],tid)).fetchall()
+    return render_template("ticket.html",t=t,msgs=msgs,users=users,units=units,categories=categories,activities=activities)
 
 def send_mpwa(phone,body):
     org=db().execute("SELECT * FROM organizations WHERE id=?",(session["org_id"],)).fetchone(); base=org["mpwa_url"] or os.getenv("MPWA_BASE_URL",""); key=org["mpwa_key"] or os.getenv("MPWA_API_KEY",""); sender=org["mpwa_sender"] or os.getenv("MPWA_SENDER","")
@@ -357,7 +360,26 @@ def settings():
         try: ticket_format.format_map({"prefix":prefix,"year":2026,"month":"08","day":"13","number":1})
         except (KeyError,ValueError): flash("Format nomor aduan tidak valid.","error"); return redirect(url_for("settings")+"#general")
         db().execute("UPDATE organizations SET name=?,accent=?,terminology=?,timezone=?,ticket_prefix=?,ticket_format=?,logo=?,icon=?,mpwa_url=?,mpwa_key=?,mpwa_sender=? WHERE id=?",(request.form["name"],request.form["accent"],request.form["terminology"],request.form.get("timezone","Asia/Jakarta"),prefix,ticket_format,logo,icon,request.form["mpwa_url"],request.form["mpwa_key"],request.form["mpwa_sender"],session["org_id"])); db().commit(); session["org_name"]=request.form["name"]; audit("organization.updated","organization",session["org_id"]); flash("Pengaturan berhasil disimpan","success")
-    org=db().execute("SELECT * FROM organizations WHERE id=?",(session["org_id"],)).fetchone(); units=db().execute("SELECT * FROM units WHERE org_id=? ORDER BY name",(session["org_id"],)).fetchall(); return render_template("settings.html",org=org,units=units)
+    org=db().execute("SELECT * FROM organizations WHERE id=?",(session["org_id"],)).fetchone(); units=db().execute("SELECT * FROM units WHERE org_id=? ORDER BY name",(session["org_id"],)).fetchall(); categories=db().execute("SELECT c.*,(SELECT count(*) FROM tickets t WHERE t.org_id=c.org_id AND t.category=c.name) usage_count FROM categories c WHERE c.org_id=? ORDER BY c.name",(session["org_id"],)).fetchall(); return render_template("settings.html",org=org,units=units,categories=categories)
+
+@app.post("/categories")
+@login_required
+@roles("owner","admin")
+def create_category():
+    name=request.form.get("name","").strip()[:80]
+    if not name: flash("Nama kategori wajib diisi.","error")
+    else:
+        try: db().execute("INSERT INTO categories(org_id,name) VALUES(?,?)",(session["org_id"],name)); db().commit(); audit("category.created","category"); flash("Kategori berhasil ditambahkan.","success")
+        except sqlite3.IntegrityError: flash("Kategori tersebut sudah tersedia.","error")
+    return redirect(url_for("settings")+"#categories")
+
+@app.post("/categories/<int:category_id>/delete")
+@login_required
+@roles("owner","admin")
+def delete_category(category_id):
+    category=db().execute("SELECT * FROM categories WHERE id=? AND org_id=?",(category_id,session["org_id"])).fetchone()
+    if not category: return ("Not found",404)
+    db().execute("DELETE FROM categories WHERE id=?",(category_id,)); db().commit(); audit("category.deleted","category",category_id,{"name":category["name"]}); flash("Kategori dihapus dari pilihan. Aduan lama tetap menyimpan kategorinya.","success"); return redirect(url_for("settings")+"#categories")
 
 @app.post("/units")
 @login_required
@@ -400,7 +422,7 @@ def report_rows():
 @app.get("/reports")
 @login_required
 def reports():
-    rows=report_rows(); categories=db().execute("SELECT DISTINCT category FROM tickets WHERE org_id=? ORDER BY category",(session["org_id"],)).fetchall(); units=db().execute("SELECT name FROM units WHERE org_id=? AND active=1 ORDER BY name",(session["org_id"],)).fetchall()
+    rows=report_rows(); categories=db().execute("SELECT name category FROM categories WHERE org_id=? ORDER BY name",(session["org_id"],)).fetchall(); units=db().execute("SELECT name FROM units WHERE org_id=? AND active=1 ORDER BY name",(session["org_id"],)).fetchall()
     return render_template("reports.html",rows=rows,categories=categories,units=units)
 
 @app.get("/reports.csv")
