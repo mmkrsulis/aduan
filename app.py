@@ -78,7 +78,7 @@ CREATE TABLE IF NOT EXISTS messages(id INTEGER PRIMARY KEY, ticket_id INTEGER NO
 CREATE TABLE IF NOT EXISTS audit_logs(id INTEGER PRIMARY KEY, org_id INTEGER NOT NULL, user_id INTEGER, action TEXT NOT NULL, entity TEXT, entity_id INTEGER, metadata TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS units(id INTEGER PRIMARY KEY, org_id INTEGER NOT NULL, name TEXT NOT NULL, officer_name TEXT, officer_phone TEXT, active INTEGER DEFAULT 1, created_at TEXT DEFAULT CURRENT_TIMESTAMP, UNIQUE(org_id,name), FOREIGN KEY(org_id) REFERENCES organizations(id));
 CREATE TABLE IF NOT EXISTS notifications(id INTEGER PRIMARY KEY, org_id INTEGER NOT NULL, user_id INTEGER, ticket_id INTEGER, title TEXT NOT NULL, body TEXT, read_at TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(org_id) REFERENCES organizations(id), FOREIGN KEY(user_id) REFERENCES users(id), FOREIGN KEY(ticket_id) REFERENCES tickets(id));
-CREATE TABLE IF NOT EXISTS flow_configs(id INTEGER PRIMARY KEY, org_id INTEGER UNIQUE NOT NULL, enabled INTEGER DEFAULT 1, default_language TEXT DEFAULT 'id', welcome_id TEXT, welcome_en TEXT, service_info_id TEXT, service_info_en TEXT, confirmation_id TEXT, confirmation_en TEXT, completion_id TEXT, completion_en TEXT, forward_template_id TEXT, forward_template_en TEXT, status_template_id TEXT, status_template_en TEXT, unavailable_id TEXT, unavailable_en TEXT, menu_items TEXT DEFAULT '[]', ai_enabled INTEGER DEFAULT 0, ai_prompt TEXT, ai_confidence REAL DEFAULT .8, office_hours TEXT DEFAULT 'Monday-Friday, 08:00-16:00', updated_at TEXT DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(org_id) REFERENCES organizations(id));
+CREATE TABLE IF NOT EXISTS flow_configs(id INTEGER PRIMARY KEY, org_id INTEGER UNIQUE NOT NULL, enabled INTEGER DEFAULT 1, default_language TEXT DEFAULT 'id', welcome_id TEXT, welcome_en TEXT, service_info_id TEXT, service_info_en TEXT, confirmation_id TEXT, confirmation_en TEXT, completion_id TEXT, completion_en TEXT, forward_template_id TEXT, forward_template_en TEXT, status_template_id TEXT, status_template_en TEXT, unavailable_id TEXT, unavailable_en TEXT, menu_items TEXT DEFAULT '[]', ai_enabled INTEGER DEFAULT 0, ai_prompt TEXT, ai_confidence REAL DEFAULT .8, session_timeout_minutes INTEGER DEFAULT 30, office_hours TEXT DEFAULT 'Monday-Friday, 08:00-16:00', updated_at TEXT DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(org_id) REFERENCES organizations(id));
 CREATE TABLE IF NOT EXISTS conversation_states(id INTEGER PRIMARY KEY, org_id INTEGER NOT NULL, phone TEXT NOT NULL, step TEXT NOT NULL DEFAULT 'menu', language TEXT DEFAULT 'id', data TEXT DEFAULT '{}', human_takeover INTEGER DEFAULT 0, updated_at TEXT DEFAULT CURRENT_TIMESTAMP, UNIQUE(org_id,phone), FOREIGN KEY(org_id) REFERENCES organizations(id));
 """
 
@@ -104,7 +104,7 @@ def init_db():
     migrations={
       "organizations":{"icon":"TEXT","timezone":"TEXT DEFAULT 'Asia/Jakarta'","ticket_prefix":"TEXT DEFAULT 'ADU'","ticket_format":"TEXT DEFAULT '{prefix}-{year}-{number:05d}'"},
       "messages":{"attachment_path":"TEXT","attachment_name":"TEXT","attachment_type":"TEXT","delivery_status":"TEXT DEFAULT 'received'"},
-      "flow_configs":{"forward_template_id":"TEXT","forward_template_en":"TEXT","status_template_id":"TEXT","status_template_en":"TEXT","unavailable_id":"TEXT","unavailable_en":"TEXT","menu_items":"TEXT DEFAULT '[]'","ai_enabled":"INTEGER DEFAULT 0","ai_prompt":"TEXT","ai_confidence":"REAL DEFAULT .8"}
+      "flow_configs":{"forward_template_id":"TEXT","forward_template_en":"TEXT","status_template_id":"TEXT","status_template_en":"TEXT","unavailable_id":"TEXT","unavailable_en":"TEXT","menu_items":"TEXT DEFAULT '[]'","ai_enabled":"INTEGER DEFAULT 0","ai_prompt":"TEXT","ai_confidence":"REAL DEFAULT .8","session_timeout_minutes":"INTEGER DEFAULT 30"}
     }
     for table,columns in migrations.items():
         existing={r[1] for r in con.execute(f"PRAGMA table_info({table})")}
@@ -436,7 +436,8 @@ def flow_settings():
         rows=zip(request.form.getlist("menu_key"),request.form.getlist("menu_label_id"),request.form.getlist("menu_label_en"),request.form.getlist("menu_action"),request.form.getlist("menu_response_id"),request.form.getlist("menu_response_en"))
         for key,label_id,label_en,action,response_id,response_en in rows:
             if key.strip() and label_id.strip(): menu.append({"key":key.strip()[:8],"label_id":label_id.strip()[:100],"label_en":label_en.strip()[:100],"action":action if action in ("new","status","info","custom") else "custom","response_id":response_id.strip()[:4000],"response_en":response_en.strip()[:4000]})
-        db().execute("""UPDATE flow_configs SET enabled=?,default_language=?,welcome_id=?,welcome_en=?,service_info_id=?,service_info_en=?,confirmation_id=?,confirmation_en=?,completion_id=?,completion_en=?,forward_template_id=?,forward_template_en=?,status_template_id=?,status_template_en=?,unavailable_id=?,unavailable_en=?,office_hours=?,ai_prompt=?,ai_confidence=?,menu_items=?,ai_enabled=?,updated_at=CURRENT_TIMESTAMP WHERE org_id=?""",[1 if request.form.get("enabled") else 0,*values,json.dumps(menu),1 if request.form.get("ai_enabled") else 0,session["org_id"]]); db().commit(); audit("flow.updated","flow",session["org_id"]); flash("Alur dan template pesan berhasil disimpan","success")
+        timeout=max(0,min(1440,int(request.form.get("session_timeout_minutes") or 30)))
+        db().execute("""UPDATE flow_configs SET enabled=?,default_language=?,welcome_id=?,welcome_en=?,service_info_id=?,service_info_en=?,confirmation_id=?,confirmation_en=?,completion_id=?,completion_en=?,forward_template_id=?,forward_template_en=?,status_template_id=?,status_template_en=?,unavailable_id=?,unavailable_en=?,office_hours=?,ai_prompt=?,ai_confidence=?,menu_items=?,ai_enabled=?,session_timeout_minutes=?,updated_at=CURRENT_TIMESTAMP WHERE org_id=?""",[1 if request.form.get("enabled") else 0,*values,json.dumps(menu),1 if request.form.get("ai_enabled") else 0,timeout,session["org_id"]]); db().commit(); audit("flow.updated","flow",session["org_id"]); flash("Alur dan template pesan berhasil disimpan","success")
     flow=db().execute("SELECT * FROM flow_configs WHERE org_id=?",(session["org_id"],)).fetchone()
     try: menu_items=json.loads(flow["menu_items"] or "[]")
     except ValueError: menu_items=[]
@@ -450,14 +451,18 @@ def fill(text, org, data=None, **extra):
 def flow_reply(org,phone,body,name,attachment=None):
     flow=db().execute("SELECT * FROM flow_configs WHERE org_id=?",(org["id"],)).fetchone()
     if not flow or not flow["enabled"]: return None
-    state=db().execute("SELECT * FROM conversation_states WHERE org_id=? AND phone=?",(org["id"],phone)).fetchone(); command=body.strip().upper(); lang=state["language"] if state else flow["default_language"]
+    state=db().execute("SELECT * FROM conversation_states WHERE org_id=? AND phone=?",(org["id"],phone)).fetchone(); command=body.strip().upper(); lang=state["language"] if state else flow["default_language"]; expired=False
+    if state and flow["session_timeout_minutes"] and state["step"]!="menu":
+        try: expired=(datetime.now(timezone.utc)-datetime.fromisoformat(state["updated_at"]).replace(tzinfo=timezone.utc)).total_seconds()>flow["session_timeout_minutes"]*60
+        except (ValueError,TypeError): expired=False
+        if expired: state=None
     if command in ("EN","ENGLISH"): lang="en"; state=None
     if command in ("ID","INDONESIA","BAHASA"): lang="id"; state=None
     welcome=flow["welcome_id" if lang=="id" else "welcome_en"]
     try: menu=json.loads(flow["menu_items"] or "[]")
     except ValueError: menu=[]
     if command in ("MENU","START","MULAI") or not state:
-        db().execute("INSERT INTO conversation_states(org_id,phone,step,language,data) VALUES(?,?,?,?,?) ON CONFLICT(org_id,phone) DO UPDATE SET step='menu',language=excluded.language,data='{}',human_takeover=0,updated_at=CURRENT_TIMESTAMP",(org["id"],phone,"menu",lang,"{}")); db().commit(); return fill(welcome,org)
+        db().execute("INSERT INTO conversation_states(org_id,phone,step,language,data) VALUES(?,?,?,?,?) ON CONFLICT(org_id,phone) DO UPDATE SET step='menu',language=excluded.language,data='{}',human_takeover=0,updated_at=CURRENT_TIMESTAMP",(org["id"],phone,"menu",lang,"{}")); db().commit(); notice=("Sesi sebelumnya telah berakhir karena tidak ada aktivitas. Silakan mulai kembali.\n\n" if lang=="id" else "Your previous session expired due to inactivity. Please start again.\n\n") if expired else ""; return notice+fill(welcome,org)
     if state["human_takeover"]: return None
     data=json.loads(state["data"] or "{}"); step=state["step"]
     def move(next_step, reply, new_data=None):
