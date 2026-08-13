@@ -20,6 +20,27 @@ services:
       - aduan_data:/data
     networks:
       - aduan_net
+  chat-timeout-worker:
+    build: .
+    container_name: aduan-hub-chat-timeout
+    restart: unless-stopped
+    healthcheck:
+      disable: true
+    command: ["python","chat_timeout_worker.py"]
+    environment:
+      DATABASE_PATH: /data/aduan.db
+      MPWA_BASE_URL: ${MPWA_BASE_URL:-http://host.docker.internal:18082}
+      MPWA_API_KEY: ${MPWA_API_KEY:-}
+      MPWA_SENDER: ${MPWA_SENDER:-}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - aduan_data:/data
+    networks:
+      - aduan_net
+    depends_on:
+      aduan-hub:
+        condition: service_healthy
 volumes:
   aduan_data:
 networks:

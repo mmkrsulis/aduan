@@ -57,3 +57,4 @@ body.dark .message.out p{background:var(--accent);color:#fff}
 .checklist input{width:15px;height:15px;flex:none;accent-color:var(--accent)}
 @media(max-width:850px){.docs-layout{grid-template-columns:1fr}.docs-nav{position:static;display:none}.checklist{grid-template-columns:1fr}}
 @media(max-width:560px){.docs-hero{flex-direction:column;padding:20px}.docs-meta{align-items:flex-start}.docs-section{grid-template-columns:1fr;padding:20px}}
+.chat-approval{border-color:color-mix(in srgb,var(--accent) 55%,var(--line));background:color-mix(in srgb,var(--soft) 45%,var(--panel))}.chat-approval .side-section-head>span{background:var(--accent);color:#fff}.approval-copy{margin:0 0 14px;color:var(--muted);font-size:10px;line-height:1.55}.approval-copy b{color:var(--text)}

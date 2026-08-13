@@ -135,8 +135,14 @@
 </label>
         <label>{{'Di luar jam layanan (Indonesia)' if lang=='id' else 'Outside hours (Indonesian)'}}<textarea name="unavailable_id" required>{{flow.unavailable_id}}</textarea>
 </label>
-        <label>Outside hours (English)<textarea name="unavailable_en" required>{{flow.unavailable_en}}</textarea>
+<label>Outside hours (English)<textarea name="unavailable_en" required>{{flow.unavailable_en}}</textarea>
 </label>
+        <label>Menunggu petugas (Indonesia)<textarea name="chat_waiting_id" required>{{flow.chat_waiting_id}}</textarea></label>
+        <label>Waiting for officer (English)<textarea name="chat_waiting_en" required>{{flow.chat_waiting_en}}</textarea></label>
+        <label>Terhubung ke petugas (Indonesia)<textarea name="chat_connected_id" required>{{flow.chat_connected_id}}</textarea></label>
+        <label>Connected to officer (English)<textarea name="chat_connected_en" required>{{flow.chat_connected_en}}</textarea></label>
+        <label>Petugas tidak tersedia (Indonesia)<textarea name="chat_timeout_id" required>{{flow.chat_timeout_id}}</textarea></label>
+        <label>Officer unavailable (English)<textarea name="chat_timeout_en" required>{{flow.chat_timeout_en}}</textarea></label>
       </section>
       <section class="language-panel">
 <div class="language-title">
