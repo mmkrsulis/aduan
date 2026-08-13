@@ -24,4 +24,5 @@
     {% if me.role in ['owner','admin'] %}<section class="side-section danger-zone"><div class="side-section-head"><span>04</span><div><h3>{{'Zona berbahaya' if lang=='id' else 'Danger zone'}}</h3><p>{{'Tindakan ini tidak dapat dibatalkan' if lang=='id' else 'This action cannot be undone'}}</p></div></div><button type="submit" formaction="{{url_for('delete_ticket',tid=t.id)}}" formmethod="post" class="danger-button wide" onclick="return confirm('{{'Hapus aduan ' if lang=='id' else 'Delete complaint '}}{{t.code}}{{'? Semua percakapan dan lampiran akan dihapus permanen.' if lang=='id' else '? All conversations and attachments will be permanently deleted.'}}')">{{'Hapus aduan' if lang=='id' else 'Delete complaint'}}</button></section>{% endif %}
   </form>
 </div>
+<script>const chat=document.querySelector('.messages');if(chat)chat.scrollTop=chat.scrollHeight</script>
 {% endblock %}
