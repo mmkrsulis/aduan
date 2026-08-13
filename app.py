@@ -309,6 +309,20 @@ def ticket(tid):
     msgs=db().execute("SELECT * FROM messages WHERE ticket_id=? ORDER BY created_at",(tid,)).fetchall(); users=db().execute("SELECT * FROM users WHERE org_id=? AND active=1 ORDER BY name",(session["org_id"],)).fetchall(); units=db().execute("SELECT * FROM units WHERE org_id=? ORDER BY name",(session["org_id"],)).fetchall(); categories=db().execute("SELECT * FROM categories WHERE org_id=? ORDER BY name",(session["org_id"],)).fetchall(); activities=db().execute("SELECT a.*,u.name user_name FROM audit_logs a LEFT JOIN users u ON u.id=a.user_id WHERE a.org_id=? AND a.entity='ticket' AND a.entity_id=? ORDER BY a.created_at DESC LIMIT 20",(session["org_id"],tid)).fetchall()
     return render_template("ticket.html",t=t,msgs=msgs,users=users,units=units,categories=categories,activities=activities)
 
+@app.post("/tickets/<int:tid>/delete")
+@login_required
+@roles("owner","admin")
+def delete_ticket(tid):
+    ticket_row=db().execute("SELECT code FROM tickets WHERE id=? AND org_id=?",(tid,session["org_id"])).fetchone()
+    if not ticket_row: return ("Not found",404)
+    attachments=[r[0] for r in db().execute("SELECT attachment_path FROM messages WHERE ticket_id=? AND attachment_path IS NOT NULL",(tid,)).fetchall()]
+    audit("ticket.deleted","ticket",tid,{"code":ticket_row["code"]})
+    db().execute("DELETE FROM notifications WHERE ticket_id=? AND org_id=?",(tid,session["org_id"])); db().execute("DELETE FROM tickets WHERE id=? AND org_id=?",(tid,session["org_id"])); db().commit()
+    for filename in attachments:
+        try: os.unlink(os.path.join(UPLOAD_DIR,filename))
+        except FileNotFoundError: pass
+    flash(f"Aduan {ticket_row['code']} telah dihapus permanen.","success"); return redirect(url_for("tickets"))
+
 def send_mpwa(phone,body):
     org=db().execute("SELECT * FROM organizations WHERE id=?",(session["org_id"],)).fetchone(); base=org["mpwa_url"] or os.getenv("MPWA_BASE_URL",""); key=org["mpwa_key"] or os.getenv("MPWA_API_KEY",""); sender=org["mpwa_sender"] or os.getenv("MPWA_SENDER","")
     if not (base and key and sender): return False,"Reply saved; configure MPWA credentials to transmit it."
