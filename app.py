@@ -418,8 +418,9 @@ def flow_settings():
         fields=("default_language","welcome_id","welcome_en","service_info_id","service_info_en","confirmation_id","confirmation_en","completion_id","completion_en","forward_template_id","forward_template_en","status_template_id","status_template_en","unavailable_id","unavailable_en","office_hours","ai_prompt","ai_confidence")
         values=[request.form.get(k,"").strip() for k in fields]
         menu=[]
-        for key,label_id,label_en,action in zip(request.form.getlist("menu_key"),request.form.getlist("menu_label_id"),request.form.getlist("menu_label_en"),request.form.getlist("menu_action")):
-            if key.strip() and label_id.strip(): menu.append({"key":key.strip()[:8],"label_id":label_id.strip()[:100],"label_en":label_en.strip()[:100],"action":action if action in ("new","status","info") else "info"})
+        rows=zip(request.form.getlist("menu_key"),request.form.getlist("menu_label_id"),request.form.getlist("menu_label_en"),request.form.getlist("menu_action"),request.form.getlist("menu_response_id"),request.form.getlist("menu_response_en"))
+        for key,label_id,label_en,action,response_id,response_en in rows:
+            if key.strip() and label_id.strip(): menu.append({"key":key.strip()[:8],"label_id":label_id.strip()[:100],"label_en":label_en.strip()[:100],"action":action if action in ("new","status","info","custom") else "custom","response_id":response_id.strip()[:4000],"response_en":response_en.strip()[:4000]})
         db().execute("""UPDATE flow_configs SET enabled=?,default_language=?,welcome_id=?,welcome_en=?,service_info_id=?,service_info_en=?,confirmation_id=?,confirmation_en=?,completion_id=?,completion_en=?,forward_template_id=?,forward_template_en=?,status_template_id=?,status_template_en=?,unavailable_id=?,unavailable_en=?,office_hours=?,ai_prompt=?,ai_confidence=?,menu_items=?,ai_enabled=?,updated_at=CURRENT_TIMESTAMP WHERE org_id=?""",[1 if request.form.get("enabled") else 0,*values,json.dumps(menu),1 if request.form.get("ai_enabled") else 0,session["org_id"]]); db().commit(); audit("flow.updated","flow",session["org_id"]); flash("Alur dan template pesan berhasil disimpan","success")
     flow=db().execute("SELECT * FROM flow_configs WHERE org_id=?",(session["org_id"],)).fetchone()
     try: menu_items=json.loads(flow["menu_items"] or "[]")
@@ -453,6 +454,7 @@ def flow_reply(org,phone,body,name,attachment=None):
         if selected and selected.get("action")=="new": return move("name","Silakan tuliskan nama lengkap Anda." if lang=="id" else "Please enter your full name.")
         if selected and selected.get("action")=="status": return move("status","Silakan kirim nomor aduan Anda, contoh: DEM-2026-00001." if lang=="id" else "Please send your complaint number, for example: DEM-2026-00001.")
         if selected and selected.get("action")=="info": return move("menu",fill(flow["service_info_id" if lang=="id" else "service_info_en"],org))
+        if selected and selected.get("action")=="custom": return move("menu",fill(selected.get("response_id" if lang=="id" else "response_en") or selected.get("response_id") or "-",org))
         choices=", ".join(str(i.get("key")) for i in menu)
         return (f"Pilihan tidak dikenali. Balas {choices}." if lang=="id" else f"Unknown option. Reply with {choices}.")
     if step=="status":
