@@ -501,6 +501,10 @@ def notifications():
     db().execute("UPDATE notifications SET read_at=CURRENT_TIMESTAMP WHERE org_id=? AND read_at IS NULL AND (user_id IS NULL OR user_id=?)",(session["org_id"],session["uid"])); db().commit()
     return render_template("notifications.html",notifications=rows)
 
+@app.get("/documentation")
+@login_required
+def documentation(): return render_template("documentation.html")
+
 @app.route("/settings/flow",methods=["GET","POST"])
 @login_required
 @roles("owner","admin")
