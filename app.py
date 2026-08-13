@@ -159,12 +159,14 @@ def init_db():
     for row in con.execute("SELECT id,menu_items,welcome_id,welcome_en FROM flow_configs").fetchall():
         try: items=json.loads(row[1] or "[]")
         except (ValueError,TypeError): items=[]
-        if not any(item.get("action")=="chat_admin" for item in items):
+        chat_item=next((item for item in items if item.get("action")=="chat_admin"),None); had_chat=bool(chat_item)
+        if not chat_item:
             used={str(item.get("key","")) for item in items}; key=next((str(i) for i in range(1,10) if str(i) not in used),"ADMIN")
-            items.append({"key":key,"label_id":"Chat dengan admin","label_en":"Chat with admin","action":"chat_admin","response_id":"Baik, percakapan ini diteruskan kepada admin. Silakan tuliskan pesan Anda. Admin akan membalas melalui WhatsApp ini.","response_en":"This conversation has been forwarded to an admin. Please write your message and an admin will reply through this WhatsApp chat."})
-            welcome_id=row[2] or ""; welcome_en=row[3] or ""
-            if "Chat dengan admin" not in welcome_id and "\n\nBalas" in welcome_id: welcome_id=welcome_id.replace("\n\nBalas",f"\n{key}. Chat dengan admin\n\nBalas",1)
-            if "Chat with admin" not in welcome_en and "\n\nReply" in welcome_en: welcome_en=welcome_en.replace("\n\nReply",f"\n{key}. Chat with admin\n\nReply",1)
+            chat_item={"key":key,"label_id":"Chat dengan admin","label_en":"Chat with admin","action":"chat_admin","response_id":"Baik, percakapan ini diteruskan kepada admin. Silakan tuliskan pesan Anda. Admin akan membalas melalui WhatsApp ini.","response_en":"This conversation has been forwarded to an admin. Please write your message and an admin will reply through this WhatsApp chat."}; items.append(chat_item)
+        key=str(chat_item.get("key") or "4"); welcome_id=(row[2] or "").replace("\r\n","\n"); welcome_en=(row[3] or "").replace("\r\n","\n")
+        if "Chat dengan admin" not in welcome_id and "\n\nBalas" in welcome_id: welcome_id=welcome_id.replace("\n\nBalas",f"\n{key}. Chat dengan admin\n\nBalas",1)
+        if "Chat with admin" not in welcome_en and "\n\nReply" in welcome_en: welcome_en=welcome_en.replace("\n\nReply",f"\n{key}. Chat with admin\n\nReply",1)
+        if welcome_id!=row[2] or welcome_en!=row[3] or not had_chat:
             con.execute("UPDATE flow_configs SET menu_items=?,welcome_id=?,welcome_en=? WHERE id=?",(json.dumps(items),welcome_id,welcome_en,row[0]))
     con.execute("UPDATE units SET active=1")
     con.commit(); con.close()
