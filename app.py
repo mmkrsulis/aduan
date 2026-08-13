@@ -1,4 +1,4 @@
-import os, sqlite3, json, secrets, csv, io, base64, uuid
+import os, sqlite3, json, secrets, csv, io, base64, uuid, re
 from datetime import datetime, timezone, timedelta
 from functools import wraps
 from flask import Flask, render_template, request, redirect, url_for, session, flash, jsonify, g, Response, send_file, send_from_directory
@@ -106,7 +106,7 @@ def init_db():
     migrations={
       "organizations":{"app_name":"TEXT DEFAULT 'AduanHub'","icon":"TEXT","timezone":"TEXT DEFAULT 'Asia/Jakarta'","ticket_prefix":"TEXT DEFAULT 'ADU'","ticket_format":"TEXT DEFAULT '{prefix}-{year}-{number:05d}'"},
       "messages":{"attachment_path":"TEXT","attachment_name":"TEXT","attachment_type":"TEXT","delivery_status":"TEXT DEFAULT 'received'"},
-      "flow_configs":{"forward_template_id":"TEXT","forward_template_en":"TEXT","status_template_id":"TEXT","status_template_en":"TEXT","unavailable_id":"TEXT","unavailable_en":"TEXT","chat_waiting_id":"TEXT","chat_waiting_en":"TEXT","chat_connected_id":"TEXT","chat_connected_en":"TEXT","chat_timeout_id":"TEXT","chat_timeout_en":"TEXT","menu_items":"TEXT DEFAULT '[]'","ai_enabled":"INTEGER DEFAULT 0","ai_prompt":"TEXT","ai_confidence":"REAL DEFAULT .8","session_timeout_minutes":"INTEGER DEFAULT 30"}
+      "flow_configs":{"forward_template_id":"TEXT","forward_template_en":"TEXT","status_template_id":"TEXT","status_template_en":"TEXT","unavailable_id":"TEXT","unavailable_en":"TEXT","identity_prompt_id":"TEXT","identity_prompt_en":"TEXT","chat_waiting_id":"TEXT","chat_waiting_en":"TEXT","chat_connected_id":"TEXT","chat_connected_en":"TEXT","chat_timeout_id":"TEXT","chat_timeout_en":"TEXT","menu_items":"TEXT DEFAULT '[]'","ai_enabled":"INTEGER DEFAULT 0","ai_prompt":"TEXT","ai_confidence":"REAL DEFAULT .8","session_timeout_minutes":"INTEGER DEFAULT 30"}
     }
     for table,columns in migrations.items():
         existing={r[1] for r in con.execute(f"PRAGMA table_info({table})")}
@@ -146,6 +146,7 @@ def init_db():
             "Your complaint has been registered as {code}. Keep this number to check its status."
         ))
     con.execute("UPDATE flow_configs SET office_hours='Senin–Jumat, 08.00–16.00' WHERE office_hours='Monday-Friday, 08:00-16:00'")
+    con.execute("UPDATE flow_configs SET welcome_id=replace(welcome_id,'Balas dengan angka 1, 2, atau 3.','Balas dengan angka 1, 2, 3, atau 4.'),welcome_en=replace(welcome_en,'Reply with 1, 2, or 3.','Reply with 1, 2, 3, or 4.')")
     con.execute("UPDATE organizations SET ticket_prefix=upper(substr(slug,1,3)) WHERE ticket_prefix IS NULL OR ticket_prefix='' OR ticket_prefix='ADU'")
     con.execute("INSERT OR IGNORE INTO categories(org_id,name) SELECT org_id,category FROM tickets WHERE category IS NOT NULL AND trim(category)<>''")
     con.execute("""UPDATE flow_configs SET
@@ -155,6 +156,8 @@ def init_db():
       status_template_en=COALESCE(status_template_en,'Status {code}: {status}\nComplaint: {description}\nUnit: {unit}\nUpdated: {updated_at}'),
       unavailable_id=COALESCE(unavailable_id,'Layanan sedang di luar jam operasional ({office_hours}). Pesan Anda tetap kami terima.'),
       unavailable_en=COALESCE(unavailable_en,'The service is currently outside operating hours ({office_hours}). Your message is still received.'),
+      identity_prompt_id=COALESCE(identity_prompt_id,'Halo, selamat datang di Layanan Aduan {organization}.\n\nSebelum melanjutkan, apakah Anda berkenan membagikan nama?\n\n1. Bagikan nama\n2. Tetap rahasia\n\nBalas dengan angka 1 atau 2.'),
+      identity_prompt_en=COALESCE(identity_prompt_en,'Hello, welcome to the Complaint Service of {organization}.\n\nBefore continuing, would you like to share your name?\n\n1. Share my name\n2. Remain anonymous\n\nReply with 1 or 2.'),
       chat_waiting_id=COALESCE(chat_waiting_id,'Kami akan menghubungkan Anda dengan petugas layanan. Silakan menunggu maksimal 5 menit.'),
       chat_waiting_en=COALESCE(chat_waiting_en,'We will connect you with a service officer. Please wait for up to 5 minutes.'),
       chat_connected_id=COALESCE(chat_connected_id,'Anda sudah terhubung ke petugas layanan. Silakan sampaikan pesan Anda.'),
@@ -555,14 +558,14 @@ def documentation(): return render_template("documentation.html")
 @roles("owner","admin")
 def flow_settings():
     if request.method=="POST":
-        fields=("default_language","welcome_id","welcome_en","service_info_id","service_info_en","confirmation_id","confirmation_en","completion_id","completion_en","forward_template_id","forward_template_en","status_template_id","status_template_en","unavailable_id","unavailable_en","chat_waiting_id","chat_waiting_en","chat_connected_id","chat_connected_en","chat_timeout_id","chat_timeout_en","office_hours","ai_prompt","ai_confidence")
+        fields=("default_language","welcome_id","welcome_en","service_info_id","service_info_en","confirmation_id","confirmation_en","completion_id","completion_en","forward_template_id","forward_template_en","status_template_id","status_template_en","unavailable_id","unavailable_en","identity_prompt_id","identity_prompt_en","chat_waiting_id","chat_waiting_en","chat_connected_id","chat_connected_en","chat_timeout_id","chat_timeout_en","office_hours","ai_prompt","ai_confidence")
         values=[request.form.get(k,"").strip() for k in fields]
         menu=[]
         rows=zip(request.form.getlist("menu_key"),request.form.getlist("menu_label_id"),request.form.getlist("menu_label_en"),request.form.getlist("menu_action"),request.form.getlist("menu_response_id"),request.form.getlist("menu_response_en"))
         for key,label_id,label_en,action,response_id,response_en in rows:
             if key.strip() and label_id.strip(): menu.append({"key":key.strip()[:8],"label_id":label_id.strip()[:100],"label_en":label_en.strip()[:100],"action":action if action in ("new","status","info","chat_admin","custom") else "custom","response_id":response_id.strip()[:4000],"response_en":response_en.strip()[:4000]})
         timeout=max(0,min(1440,int(request.form.get("session_timeout_minutes") or 30)))
-        db().execute("""UPDATE flow_configs SET enabled=?,default_language=?,welcome_id=?,welcome_en=?,service_info_id=?,service_info_en=?,confirmation_id=?,confirmation_en=?,completion_id=?,completion_en=?,forward_template_id=?,forward_template_en=?,status_template_id=?,status_template_en=?,unavailable_id=?,unavailable_en=?,chat_waiting_id=?,chat_waiting_en=?,chat_connected_id=?,chat_connected_en=?,chat_timeout_id=?,chat_timeout_en=?,office_hours=?,ai_prompt=?,ai_confidence=?,menu_items=?,ai_enabled=?,session_timeout_minutes=?,updated_at=CURRENT_TIMESTAMP WHERE org_id=?""",[1 if request.form.get("enabled") else 0,*values,json.dumps(menu),1 if request.form.get("ai_enabled") else 0,timeout,session["org_id"]]); db().commit(); audit("flow.updated","flow",session["org_id"]); flash("Alur dan template pesan berhasil disimpan","success")
+        db().execute("""UPDATE flow_configs SET enabled=?,default_language=?,welcome_id=?,welcome_en=?,service_info_id=?,service_info_en=?,confirmation_id=?,confirmation_en=?,completion_id=?,completion_en=?,forward_template_id=?,forward_template_en=?,status_template_id=?,status_template_en=?,unavailable_id=?,unavailable_en=?,identity_prompt_id=?,identity_prompt_en=?,chat_waiting_id=?,chat_waiting_en=?,chat_connected_id=?,chat_connected_en=?,chat_timeout_id=?,chat_timeout_en=?,office_hours=?,ai_prompt=?,ai_confidence=?,menu_items=?,ai_enabled=?,session_timeout_minutes=?,updated_at=CURRENT_TIMESTAMP WHERE org_id=?""",[1 if request.form.get("enabled") else 0,*values,json.dumps(menu),1 if request.form.get("ai_enabled") else 0,timeout,session["org_id"]]); db().commit(); audit("flow.updated","flow",session["org_id"]); flash("Alur dan template pesan berhasil disimpan","success")
     flow=db().execute("SELECT * FROM flow_configs WHERE org_id=?",(session["org_id"],)).fetchone()
     try: menu_items=json.loads(flow["menu_items"] or "[]")
     except ValueError: menu_items=[]
@@ -588,18 +591,25 @@ def flow_reply(org,phone,body,name,attachment=None):
     except ValueError: menu=[]
     if command in ("MENU","START","MULAI") or not state:
         db().execute("UPDATE chat_requests SET status='cancelled' WHERE org_id=? AND phone=? AND status='pending'",(org["id"],phone))
-        db().execute("INSERT INTO conversation_states(org_id,phone,step,language,data) VALUES(?,?,?,?,?) ON CONFLICT(org_id,phone) DO UPDATE SET step='menu',language=excluded.language,data='{}',human_takeover=0,updated_at=CURRENT_TIMESTAMP",(org["id"],phone,"menu",lang,"{}")); db().commit(); notice=("Sesi sebelumnya telah berakhir karena tidak ada aktivitas. Silakan mulai kembali.\n\n" if lang=="id" else "Your previous session expired due to inactivity. Please start again.\n\n") if expired else ""; return notice+fill(welcome,org)
+        db().execute("INSERT INTO conversation_states(org_id,phone,step,language,data) VALUES(?,?,?,?,?) ON CONFLICT(org_id,phone) DO UPDATE SET step='identity_choice',language=excluded.language,data='{}',human_takeover=0,updated_at=CURRENT_TIMESTAMP",(org["id"],phone,"identity_choice",lang,"{}")); db().commit(); notice=("Sesi sebelumnya telah berakhir karena tidak ada aktivitas. Silakan mulai kembali.\n\n" if lang=="id" else "Your previous session expired due to inactivity. Please start again.\n\n") if expired else ""; return notice+fill(flow["identity_prompt_id" if lang=="id" else "identity_prompt_en"],org)
     if state["human_takeover"]: return None
     data=json.loads(state["data"] or "{}"); step=state["step"]
     def move(next_step, reply, new_data=None):
         db().execute("UPDATE conversation_states SET step=?,language=?,data=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",(next_step,lang,json.dumps(new_data if new_data is not None else data),state["id"])); db().commit(); return reply
     if command in ("BATAL","CANCEL"):
         return move("menu",("Proses dibatalkan. Ketik MENU untuk kembali ke menu utama." if lang=="id" else "The process was cancelled. Type MENU to return to the main menu."),{})
+    if step=="identity_choice":
+        if command in ("1","NAMA","NAME"): return move("identity_name","Silakan tuliskan nama Anda." if lang=="id" else "Please enter your name.",{})
+        if command in ("2","RAHASIA","ANONIM","ANONYMOUS"):
+            data={"name":"Pelapor anonim" if lang=="id" else "Anonymous reporter"}; return move("menu",fill(welcome,org),data)
+        return "Balas 1 untuk membagikan nama atau 2 untuk tetap rahasia." if lang=="id" else "Reply 1 to share your name or 2 to remain anonymous."
+    if step=="identity_name":
+        data={"name":body.strip()[:120] or ("Pelapor anonim" if lang=="id" else "Anonymous reporter")}; return move("menu",fill(welcome,org),data)
     if step=="menu":
         selected=next((item for item in menu if str(item.get("key","")).upper()==command),None)
         if selected and selected.get("action")=="new":
-            form=("Silakan isi format berikut dalam satu pesan:\n\nNama:\nAduan:\n\nAnda juga dapat melampirkan foto atau video." if lang=="id" else "Please complete this format in one message:\n\nName:\nComplaint:\n\nYou may also attach a photo or video.")
-            return move("complaint_form",form,{})
+            prompt=("Silakan ceritakan aduan Anda dalam satu pesan. Anda dapat melampirkan foto atau video." if lang=="id" else "Please describe your complaint in one message. You may attach a photo or video.")
+            return move("complaint_description",prompt,data)
         if selected and selected.get("action")=="status": return move("status","Silakan kirim nomor aduan Anda, contoh: DEM-2026-00001." if lang=="id" else "Please send your complaint number, for example: DEM-2026-00001.")
         if selected and selected.get("action")=="info": return move("menu",fill(flow["service_info_id" if lang=="id" else "service_info_en"],org))
         if selected and selected.get("action")=="chat_admin":
@@ -625,18 +635,19 @@ def flow_reply(org,phone,body,name,attachment=None):
         template=flow["status_template_id" if lang=="id" else "status_template_en"]
         reply=fill(template,org,{"code":t["code"],"status":t["status"].replace("_"," "),"description":t["subject"],"unit":t["unit"] or "-","updated_at":t["updated_at"]})
         return move("menu",reply,{})
+    if step=="complaint_description":
+        description=body.strip()
+        if not description or description=="[Lampiran]": return "Tuliskan isi aduan Anda dalam satu pesan." if lang=="id" else "Please write your complaint in one message."
+        data["description"]=description[:4000]; data.setdefault("name","Pelapor anonim" if lang=="id" else "Anonymous reporter"); data.setdefault("location","-")
+        if attachment: data["attachment"]={"path":attachment[0],"name":attachment[1],"type":attachment[2]}
+        return move("confirm",fill(flow["confirmation_id" if lang=="id" else "confirmation_en"],org,data),data)
     if step=="complaint_form":
-        labels={"name":("nama","name"),"location":("lokasi","location"),"description":("aduan","complaint")}; parsed={}
-        current=None
-        for raw_line in body.splitlines():
-            line=raw_line.strip()
-            matched=False
-            for field,names in labels.items():
-                for label in names:
-                    if line.lower().startswith(label+":"):
-                        current=field; parsed[field]=line.split(":",1)[1].strip(); matched=True; break
-                if matched: break
-            if not matched and current and line: parsed[current]=(parsed.get(current,"")+" "+line).strip()
+        normalized=(body or "").replace("\\n","\n").replace("：",":").replace("*","").strip(); parsed={}
+        aliases={"name":"nama|name","location":"lokasi|location","description":"aduan|keluhan|complaint"}
+        boundary=r"(?=\s*(?:nama|name|lokasi|location|aduan|keluhan|complaint)\s*[:\-]|$)"
+        for field,alias in aliases.items():
+            match=re.search(rf"(?:^|\n|\s)\s*(?:{alias})\s*[:\-]\s*(.+?){boundary}",normalized,re.IGNORECASE|re.DOTALL)
+            if match: parsed[field]=match.group(1).strip()
         if not parsed.get("name") or not parsed.get("description"):
             return "Format belum lengkap. Isi minimal Nama dan Aduan sesuai contoh, atau ketik BATAL." if lang=="id" else "The format is incomplete. Complete at least Name and Complaint, or type CANCEL."
         data={"name":parsed["name"][:120],"location":parsed.get("location","")[:240] or "-","description":parsed["description"][:4000]}
@@ -651,7 +662,7 @@ def flow_reply(org,phone,body,name,attachment=None):
         text=fill(flow["confirmation_id" if lang=="id" else "confirmation_en"],org,data)
         return move("confirm",text,data)
     if step=="confirm":
-        if command in ("UBAH","EDIT"): return move("name","Silakan tuliskan kembali nama lengkap Anda." if lang=="id" else "Please re-enter your full name.",{})
+        if command in ("UBAH","EDIT"): return move("complaint_description","Silakan tuliskan kembali aduan Anda dalam satu pesan." if lang=="id" else "Please rewrite your complaint in one message.",{"name":data.get("name","Pelapor anonim" if lang=="id" else "Anonymous reporter")})
         if command not in ("KIRIM","SEND"): return "Balas KIRIM, UBAH, atau BATAL." if lang=="id" else "Reply SEND, EDIT, or CANCEL."
         c=db().execute("SELECT * FROM contacts WHERE org_id=? AND phone=?",(org["id"],phone)).fetchone()
         if c: cid=c["id"]; db().execute("UPDATE contacts SET name=?,location=? WHERE id=?",(data["name"],data["location"],cid))
