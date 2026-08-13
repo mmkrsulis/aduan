@@ -70,7 +70,7 @@ def csrf_protect():
 
 SCHEMA = """
 PRAGMA foreign_keys=ON;
-CREATE TABLE IF NOT EXISTS organizations(id INTEGER PRIMARY KEY, name TEXT NOT NULL, slug TEXT UNIQUE, logo TEXT, icon TEXT, accent TEXT DEFAULT '#2563eb', terminology TEXT DEFAULT 'Complaint', timezone TEXT DEFAULT 'Asia/Jakarta', mpwa_url TEXT, mpwa_key TEXT, mpwa_sender TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE IF NOT EXISTS organizations(id INTEGER PRIMARY KEY, name TEXT NOT NULL, slug TEXT UNIQUE, logo TEXT, icon TEXT, accent TEXT DEFAULT '#2563eb', terminology TEXT DEFAULT 'Complaint', timezone TEXT DEFAULT 'Asia/Jakarta', ticket_prefix TEXT DEFAULT 'ADU', ticket_format TEXT DEFAULT '{prefix}-{year}-{number:05d}', mpwa_url TEXT, mpwa_key TEXT, mpwa_sender TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY, org_id INTEGER NOT NULL, name TEXT NOT NULL, email TEXT UNIQUE NOT NULL, password TEXT NOT NULL, role TEXT NOT NULL CHECK(role IN ('owner','admin','supervisor','agent','viewer')), unit TEXT, active INTEGER DEFAULT 1, last_login TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(org_id) REFERENCES organizations(id));
 CREATE TABLE IF NOT EXISTS contacts(id INTEGER PRIMARY KEY, org_id INTEGER NOT NULL, name TEXT, phone TEXT NOT NULL, location TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, UNIQUE(org_id,phone), FOREIGN KEY(org_id) REFERENCES organizations(id));
 CREATE TABLE IF NOT EXISTS tickets(id INTEGER PRIMARY KEY, org_id INTEGER NOT NULL, contact_id INTEGER NOT NULL, code TEXT UNIQUE, subject TEXT NOT NULL, category TEXT DEFAULT 'General', priority TEXT DEFAULT 'normal', status TEXT DEFAULT 'new', unit TEXT, assignee_id INTEGER, sla_due TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, updated_at TEXT DEFAULT CURRENT_TIMESTAMP, closed_at TEXT, FOREIGN KEY(org_id) REFERENCES organizations(id), FOREIGN KEY(contact_id) REFERENCES contacts(id), FOREIGN KEY(assignee_id) REFERENCES users(id));
@@ -102,7 +102,7 @@ def init_db():
     os.makedirs(os.path.dirname(DB), exist_ok=True); os.makedirs(UPLOAD_DIR, exist_ok=True)
     con=sqlite3.connect(DB, timeout=30); con.executescript(SCHEMA)
     migrations={
-      "organizations":{"icon":"TEXT","timezone":"TEXT DEFAULT 'Asia/Jakarta'"},
+      "organizations":{"icon":"TEXT","timezone":"TEXT DEFAULT 'Asia/Jakarta'","ticket_prefix":"TEXT DEFAULT 'ADU'","ticket_format":"TEXT DEFAULT '{prefix}-{year}-{number:05d}'"},
       "messages":{"attachment_path":"TEXT","attachment_name":"TEXT","attachment_type":"TEXT","delivery_status":"TEXT DEFAULT 'received'"},
       "flow_configs":{"forward_template_id":"TEXT","forward_template_en":"TEXT","status_template_id":"TEXT","status_template_en":"TEXT","unavailable_id":"TEXT","unavailable_en":"TEXT","menu_items":"TEXT DEFAULT '[]'","ai_enabled":"INTEGER DEFAULT 0","ai_prompt":"TEXT","ai_confidence":"REAL DEFAULT .8"}
     }
@@ -144,6 +144,7 @@ def init_db():
             "Your complaint has been registered as {code}. Keep this number to check its status."
         ))
     con.execute("UPDATE flow_configs SET office_hours='Senin–Jumat, 08.00–16.00' WHERE office_hours='Monday-Friday, 08:00-16:00'")
+    con.execute("UPDATE organizations SET ticket_prefix=upper(substr(slug,1,3)) WHERE ticket_prefix IS NULL OR ticket_prefix='' OR ticket_prefix='ADU'")
     con.execute("""UPDATE flow_configs SET
       forward_template_id=COALESCE(forward_template_id,'Aduan baru ditugaskan\n{code} — {description}\nPelapor: {name}\nLokasi: {location}\nPrioritas: {priority}\nMohon koordinasikan tindak lanjut dengan layanan aduan.'),
       forward_template_en=COALESCE(forward_template_en,'New complaint assigned\n{code} — {description}\nReporter: {name}\nLocation: {location}\nPriority: {priority}\nPlease coordinate the follow-up with the complaint desk.'),
@@ -203,6 +204,17 @@ def store_upload(file=None, payload=None, original_name=None, mime=None):
     filename=f"{uuid.uuid4().hex}.{ALLOWED_MEDIA[mime]}"
     with open(os.path.join(UPLOAD_DIR,filename),"wb") as target: target.write(raw)
     return filename,(original_name or filename)[:200],mime
+
+def next_ticket_code(org):
+    now=datetime.now(timezone.utc); number=db().execute("SELECT count(*)+1 FROM tickets WHERE org_id=?",(org["id"],)).fetchone()[0]
+    pattern=(org["ticket_format"] or "{prefix}-{year}-{number:05d}")[:80]; values={"prefix":(org["ticket_prefix"] or org["slug"][:3]).upper(),"year":now.year,"month":f"{now.month:02d}","day":f"{now.day:02d}","number":number}
+    try: code=pattern.format_map(values)
+    except (KeyError,ValueError): code=f"{values['prefix']}-{now.year}-{number:05d}"
+    while db().execute("SELECT 1 FROM tickets WHERE code=?",(code,)).fetchone():
+        number+=1; values["number"]=number
+        try: code=pattern.format_map(values)
+        except (KeyError,ValueError): code=f"{values['prefix']}-{now.year}-{number:05d}"
+    return code[:80]
 
 @app.get("/media/<path:filename>")
 def media_file(filename):
@@ -341,7 +353,10 @@ def settings():
             if request.files.get("logo") and request.files["logo"].filename: logo=store_upload(file=request.files["logo"])[0]
             if request.files.get("icon") and request.files["icon"].filename: icon=store_upload(file=request.files["icon"])[0]
         except ValueError as e: flash(str(e),"error"); return redirect(url_for("settings"))
-        db().execute("UPDATE organizations SET name=?,accent=?,terminology=?,timezone=?,logo=?,icon=?,mpwa_url=?,mpwa_key=?,mpwa_sender=? WHERE id=?",(request.form["name"],request.form["accent"],request.form["terminology"],request.form.get("timezone","Asia/Jakarta"),logo,icon,request.form["mpwa_url"],request.form["mpwa_key"],request.form["mpwa_sender"],session["org_id"])); db().commit(); session["org_name"]=request.form["name"]; audit("organization.updated","organization",session["org_id"]); flash("Pengaturan berhasil disimpan","success")
+        prefix="".join(c for c in request.form.get("ticket_prefix","ADU").upper() if c.isalnum())[:12] or "ADU"; ticket_format=request.form.get("ticket_format","{prefix}-{year}-{number:05d}").strip()[:80]
+        try: ticket_format.format_map({"prefix":prefix,"year":2026,"month":"08","day":"13","number":1})
+        except (KeyError,ValueError): flash("Format nomor aduan tidak valid.","error"); return redirect(url_for("settings")+"#general")
+        db().execute("UPDATE organizations SET name=?,accent=?,terminology=?,timezone=?,ticket_prefix=?,ticket_format=?,logo=?,icon=?,mpwa_url=?,mpwa_key=?,mpwa_sender=? WHERE id=?",(request.form["name"],request.form["accent"],request.form["terminology"],request.form.get("timezone","Asia/Jakarta"),prefix,ticket_format,logo,icon,request.form["mpwa_url"],request.form["mpwa_key"],request.form["mpwa_sender"],session["org_id"])); db().commit(); session["org_name"]=request.form["name"]; audit("organization.updated","organization",session["org_id"]); flash("Pengaturan berhasil disimpan","success")
     org=db().execute("SELECT * FROM organizations WHERE id=?",(session["org_id"],)).fetchone(); units=db().execute("SELECT * FROM units WHERE org_id=? ORDER BY name",(session["org_id"],)).fetchall(); return render_template("settings.html",org=org,units=units)
 
 @app.post("/units")
@@ -476,7 +491,7 @@ def flow_reply(org,phone,body,name,attachment=None):
         c=db().execute("SELECT * FROM contacts WHERE org_id=? AND phone=?",(org["id"],phone)).fetchone()
         if c: cid=c["id"]; db().execute("UPDATE contacts SET name=?,location=? WHERE id=?",(data["name"],data["location"],cid))
         else: db().execute("INSERT INTO contacts(org_id,name,phone,location) VALUES(?,?,?,?)",(org["id"],data["name"],phone,data["location"])); cid=db().execute("SELECT last_insert_rowid()").fetchone()[0]
-        n=db().execute("SELECT count(*)+1 FROM tickets WHERE org_id=?",(org["id"],)).fetchone()[0]; code=f"{org['slug'][:3].upper()}-{datetime.utcnow().year}-{n:05}"
+        code=next_ticket_code(org)
         db().execute("INSERT INTO tickets(org_id,contact_id,code,subject) VALUES(?,?,?,?)",(org["id"],cid,code,data["description"][:100])); tid=db().execute("SELECT last_insert_rowid()").fetchone()[0]
         media=data.get("attachment") or {}
         db().execute("INSERT INTO messages(ticket_id,direction,body,sender,attachment_path,attachment_name,attachment_type) VALUES(?,?,?,?,?,?,?)",(tid,"in",data["description"],data["name"],media.get("path"),media.get("name"),media.get("type"))); db().execute("INSERT INTO notifications(org_id,ticket_id,title,body) VALUES(?,?,?,?)",(org["id"],tid,"New WhatsApp complaint",f"{data['name']}: {data['description'][:120]}")); db().execute("UPDATE conversation_states SET step='menu',data='{}',updated_at=CURRENT_TIMESTAMP WHERE id=?",(state["id"],)); db().commit()
@@ -506,7 +521,7 @@ def webhook(slug):
     else: cid=c["id"]
     t=db().execute("SELECT * FROM tickets WHERE org_id=? AND contact_id=? AND status NOT IN ('resolved','closed') ORDER BY id DESC LIMIT 1",(org["id"],cid)).fetchone()
     if not t:
-        n=db().execute("SELECT count(*)+1 FROM tickets WHERE org_id=?",(org["id"],)).fetchone()[0]; code=f"{org['slug'][:3].upper()}-{datetime.utcnow().year}-{n:05}"; db().execute("INSERT INTO tickets(org_id,contact_id,code,subject) VALUES(?,?,?,?)",(org["id"],cid,code,body[:100])); tid=db().execute("SELECT last_insert_rowid()").fetchone()[0]
+        code=next_ticket_code(org); db().execute("INSERT INTO tickets(org_id,contact_id,code,subject) VALUES(?,?,?,?)",(org["id"],cid,code,body[:100])); tid=db().execute("SELECT last_insert_rowid()").fetchone()[0]
     else: tid=t["id"]
     db().execute("INSERT INTO messages(ticket_id,direction,body,sender,attachment_path,attachment_name,attachment_type) VALUES(?,?,?,?,?,?,?)",(tid,"in",body,name,*(attachment or (None,None,None)))); db().execute("UPDATE tickets SET updated_at=CURRENT_TIMESTAMP WHERE id=?",(tid,)); db().execute("INSERT INTO notifications(org_id,ticket_id,title,body) VALUES(?,?,?,?)",(org["id"],tid,"New WhatsApp complaint",f"{name}: {body[:120]}")); db().commit(); return jsonify(status=True,ticket_id=tid)
 
