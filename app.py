@@ -156,6 +156,16 @@ def init_db():
       unavailable_en=COALESCE(unavailable_en,'The service is currently outside operating hours ({office_hours}). Your message is still received.'),
       ai_prompt=COALESCE(ai_prompt,'Klasifikasikan aduan secara singkat, objektif, dan jangan membuat fakta baru.'),
       menu_items=CASE WHEN menu_items IS NULL OR menu_items='' OR menu_items='[]' THEN '[{"key":"1","label_id":"Buat aduan baru","label_en":"Create a new complaint","action":"new"},{"key":"2","label_id":"Cek status aduan","label_en":"Check complaint status","action":"status"},{"key":"3","label_id":"Informasi layanan","label_en":"Service information","action":"info"}]' ELSE menu_items END""")
+    for row in con.execute("SELECT id,menu_items,welcome_id,welcome_en FROM flow_configs").fetchall():
+        try: items=json.loads(row[1] or "[]")
+        except (ValueError,TypeError): items=[]
+        if not any(item.get("action")=="chat_admin" for item in items):
+            used={str(item.get("key","")) for item in items}; key=next((str(i) for i in range(1,10) if str(i) not in used),"ADMIN")
+            items.append({"key":key,"label_id":"Chat dengan admin","label_en":"Chat with admin","action":"chat_admin","response_id":"Baik, percakapan ini diteruskan kepada admin. Silakan tuliskan pesan Anda. Admin akan membalas melalui WhatsApp ini.","response_en":"This conversation has been forwarded to an admin. Please write your message and an admin will reply through this WhatsApp chat."})
+            welcome_id=row[2] or ""; welcome_en=row[3] or ""
+            if "Chat dengan admin" not in welcome_id and "\n\nBalas" in welcome_id: welcome_id=welcome_id.replace("\n\nBalas",f"\n{key}. Chat dengan admin\n\nBalas",1)
+            if "Chat with admin" not in welcome_en and "\n\nReply" in welcome_en: welcome_en=welcome_en.replace("\n\nReply",f"\n{key}. Chat with admin\n\nReply",1)
+            con.execute("UPDATE flow_configs SET menu_items=?,welcome_id=?,welcome_en=? WHERE id=?",(json.dumps(items),welcome_id,welcome_en,row[0]))
     con.execute("UPDATE units SET active=1")
     con.commit(); con.close()
 
@@ -292,13 +302,16 @@ def ticket(tid):
                     flash(msg,"success" if ok else "error")
                     if ok:
                         db().execute("INSERT INTO messages(ticket_id,direction,body,sender,internal,attachment_path,attachment_name,attachment_type,delivery_status) VALUES(?,?,?,?,0,?,?,?,'sent')",(tid,"out",body,session["name"],*(stored or (None,None,None)))); db().execute("UPDATE tickets SET updated_at=CURRENT_TIMESTAMP WHERE id=?",(tid,)); db().commit(); audit("reply.sent","ticket",tid)
+                        db().execute("INSERT INTO conversation_states(org_id,phone,step,language,data,human_takeover) VALUES(?,?,?,?,?,1) ON CONFLICT(org_id,phone) DO UPDATE SET step='human_chat',human_takeover=1,updated_at=CURRENT_TIMESTAMP",(session["org_id"],t["phone"],"human_chat",session.get("lang","id"),"{}")); db().commit()
                     else: audit("reply.failed","ticket",tid,{"reason":msg})
         elif action=="forward":
             unit=db().execute("SELECT * FROM units WHERE id=? AND org_id=? AND active=1",(request.form.get("unit_id"),session["org_id"])).fetchone()
             if unit and unit["officer_phone"]:
                 flow=db().execute("SELECT * FROM flow_configs WHERE org_id=?",(session["org_id"],)).fetchone(); template=flow["forward_template_id" if session.get("lang","id")=="id" else "forward_template_en"]
                 org=db().execute("SELECT * FROM organizations WHERE id=?",(session["org_id"],)).fetchone()
-                text=fill(template,org,{"code":t["code"],"description":t["subject"],"name":t["contact"],"location":t["location"],"priority":t["priority"],"unit":unit["name"],"officer":unit["officer_name"]})
+                original=db().execute("SELECT body FROM messages WHERE ticket_id=? AND direction='in' AND internal=0 ORDER BY id ASC LIMIT 1",(tid,)).fetchone()
+                description=(original["body"] if original and original["body"] else t["subject"])
+                text=fill(template,org,{"code":t["code"],"description":description,"name":t["contact"],"location":t["location"],"priority":t["priority"],"unit":unit["name"],"officer":unit["officer_name"]})
                 ok,msg=send_mpwa(unit["officer_phone"],text); flash(msg,"success" if ok else "error")
                 if ok:
                     db().execute("UPDATE tickets SET unit=?,status='assigned',updated_at=CURRENT_TIMESTAMP WHERE id=?",(unit["name"],tid))
@@ -326,13 +339,25 @@ def delete_ticket(tid):
 def send_mpwa(phone,body):
     org=db().execute("SELECT * FROM organizations WHERE id=?",(session["org_id"],)).fetchone(); base=org["mpwa_url"] or os.getenv("MPWA_BASE_URL",""); key=org["mpwa_key"] or os.getenv("MPWA_API_KEY",""); sender=org["mpwa_sender"] or os.getenv("MPWA_SENDER","")
     if not (base and key and sender): return False,"Reply saved; configure MPWA credentials to transmit it."
+    chunks=[]; remaining=(body or "").strip()
+    while remaining:
+        if len(remaining)<=3500: chunks.append(remaining); break
+        cut=remaining.rfind("\n",0,3500)
+        if cut<1000: cut=remaining.rfind(" ",0,3500)
+        if cut<1000: cut=3500
+        chunks.append(remaining[:cut].rstrip()); remaining=remaining[cut:].lstrip()
     try:
-        r=requests.post(base.rstrip("/")+"/send-message",data={"api_key":key,"sender":sender,"number":phone,"message":body},timeout=15)
-        try: payload=r.json()
-        except ValueError: payload={}
-        ok=r.ok and payload.get("status") is True
-        message=payload.get("msg") or payload.get("message")
-        return ok,("Message sent through MPWA." if ok else (message or f"MPWA rejected the message ({r.status_code})."))
+        total=max(1,len(chunks))
+        for index,chunk in enumerate(chunks or [""],1):
+            message_body=chunk if total==1 else f"({index}/{total})\n{chunk}"
+            r=requests.post(base.rstrip("/")+"/send-message",data={"api_key":key,"sender":sender,"number":phone,"message":message_body},timeout=15)
+            try: payload=r.json()
+            except ValueError: payload={}
+            ok=r.ok and payload.get("status") is True
+            if not ok:
+                message=payload.get("msg") or payload.get("message")
+                return False,(message or f"MPWA rejected message part {index}/{total} ({r.status_code}).")
+        return True,("Message sent through MPWA." if total==1 else f"Complete message sent in {total} parts through MPWA.")
     except requests.RequestException as e: return False,f"MPWA connection failed: {e}"
 
 def send_mpwa_media(phone,url,mime,caption=""):
@@ -515,7 +540,7 @@ def flow_settings():
         menu=[]
         rows=zip(request.form.getlist("menu_key"),request.form.getlist("menu_label_id"),request.form.getlist("menu_label_en"),request.form.getlist("menu_action"),request.form.getlist("menu_response_id"),request.form.getlist("menu_response_en"))
         for key,label_id,label_en,action,response_id,response_en in rows:
-            if key.strip() and label_id.strip(): menu.append({"key":key.strip()[:8],"label_id":label_id.strip()[:100],"label_en":label_en.strip()[:100],"action":action if action in ("new","status","info","custom") else "custom","response_id":response_id.strip()[:4000],"response_en":response_en.strip()[:4000]})
+            if key.strip() and label_id.strip(): menu.append({"key":key.strip()[:8],"label_id":label_id.strip()[:100],"label_en":label_en.strip()[:100],"action":action if action in ("new","status","info","chat_admin","custom") else "custom","response_id":response_id.strip()[:4000],"response_en":response_en.strip()[:4000]})
         timeout=max(0,min(1440,int(request.form.get("session_timeout_minutes") or 30)))
         db().execute("""UPDATE flow_configs SET enabled=?,default_language=?,welcome_id=?,welcome_en=?,service_info_id=?,service_info_en=?,confirmation_id=?,confirmation_en=?,completion_id=?,completion_en=?,forward_template_id=?,forward_template_en=?,status_template_id=?,status_template_en=?,unavailable_id=?,unavailable_en=?,office_hours=?,ai_prompt=?,ai_confidence=?,menu_items=?,ai_enabled=?,session_timeout_minutes=?,updated_at=CURRENT_TIMESTAMP WHERE org_id=?""",[1 if request.form.get("enabled") else 0,*values,json.dumps(menu),1 if request.form.get("ai_enabled") else 0,timeout,session["org_id"]]); db().commit(); audit("flow.updated","flow",session["org_id"]); flash("Alur dan template pesan berhasil disimpan","success")
     flow=db().execute("SELECT * FROM flow_configs WHERE org_id=?",(session["org_id"],)).fetchone()
@@ -554,6 +579,18 @@ def flow_reply(org,phone,body,name,attachment=None):
         if selected and selected.get("action")=="new": return move("name","Silakan tuliskan nama lengkap Anda." if lang=="id" else "Please enter your full name.")
         if selected and selected.get("action")=="status": return move("status","Silakan kirim nomor aduan Anda, contoh: DEM-2026-00001." if lang=="id" else "Please send your complaint number, for example: DEM-2026-00001.")
         if selected and selected.get("action")=="info": return move("menu",fill(flow["service_info_id" if lang=="id" else "service_info_en"],org))
+        if selected and selected.get("action")=="chat_admin":
+            c=db().execute("SELECT * FROM contacts WHERE org_id=? AND phone=?",(org["id"],phone)).fetchone()
+            if c: cid=c["id"]
+            else: db().execute("INSERT INTO contacts(org_id,name,phone) VALUES(?,?,?)",(org["id"],name,phone)); cid=db().execute("SELECT last_insert_rowid()").fetchone()[0]
+            t=db().execute("SELECT id,code FROM tickets WHERE org_id=? AND contact_id=? AND status NOT IN ('resolved','closed') ORDER BY id DESC LIMIT 1",(org["id"],cid)).fetchone()
+            if t: tid,code=t["id"],t["code"]
+            else:
+                code=next_ticket_code(org); db().execute("INSERT INTO tickets(org_id,contact_id,code,subject,category) VALUES(?,?,?,?,?)",(org["id"],cid,code,"Permintaan chat dengan admin","General")); tid=db().execute("SELECT last_insert_rowid()").fetchone()[0]
+            db().execute("INSERT INTO notifications(org_id,ticket_id,title,body) VALUES(?,?,?,?)",(org["id"],tid,"Permintaan chat dengan admin",f"{name or phone} meminta berbicara dengan admin ({code})."))
+            db().execute("UPDATE conversation_states SET step='human_chat',human_takeover=1,data='{}',updated_at=CURRENT_TIMESTAMP WHERE id=?",(state["id"],)); db().commit()
+            response=selected.get("response_id" if lang=="id" else "response_en") or ("Baik, percakapan ini diteruskan kepada admin. Silakan tuliskan pesan Anda." if lang=="id" else "This conversation has been forwarded to an admin. Please write your message.")
+            return fill(response,org,{"code":code})
         if selected and selected.get("action")=="custom": return move("menu",fill(selected.get("response_id" if lang=="id" else "response_en") or selected.get("response_id") or "-",org))
         choices=", ".join(str(i.get("key")) for i in menu)
         return (f"Pilihan tidak dikenali. Balas {choices}." if lang=="id" else f"Unknown option. Reply with {choices}.")
@@ -589,7 +626,12 @@ def webhook(slug):
     if not org: return jsonify(error="unknown organization"),404
     expected=os.getenv("WEBHOOK_SECRET","")
     if expected and not secrets.compare_digest(request.args.get("token",""),expected): return jsonify(error="unauthorized webhook"),401
-    p=request.get_json(silent=True) or request.form; phone=str(p.get("from","")).split("@")[0]; body=p.get("message") or "[Lampiran]"; name=p.get("name") or phone
+    p=request.get_json(silent=True) or request.form
+    def truthy(value): return value is True or str(value).strip().lower() in ("1","true","yes","y")
+    message_data=p.get("data") if isinstance(p.get("data"),dict) else {}
+    if any(truthy(p.get(k)) or truthy(message_data.get(k)) for k in ("fromMe","from_me","isFromMe","is_from_me","outgoing")):
+        return jsonify(status=True,ignored="outgoing message")
+    phone=str(p.get("from","")).split("@")[0]; body=p.get("message") or "[Lampiran]"; name=p.get("name") or phone
     if not phone: return jsonify(error="missing sender"),400
     attachment=None; media=p.get("media")
     if media and p.get("mimetype") in ALLOWED_MEDIA:
