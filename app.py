@@ -70,7 +70,7 @@ def csrf_protect():
 
 SCHEMA = """
 PRAGMA foreign_keys=ON;
-CREATE TABLE IF NOT EXISTS organizations(id INTEGER PRIMARY KEY, name TEXT NOT NULL, slug TEXT UNIQUE, logo TEXT, icon TEXT, accent TEXT DEFAULT '#2563eb', terminology TEXT DEFAULT 'Complaint', timezone TEXT DEFAULT 'Asia/Jakarta', ticket_prefix TEXT DEFAULT 'ADU', ticket_format TEXT DEFAULT '{prefix}-{year}-{number:05d}', mpwa_url TEXT, mpwa_key TEXT, mpwa_sender TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE IF NOT EXISTS organizations(id INTEGER PRIMARY KEY, name TEXT NOT NULL, app_name TEXT DEFAULT 'AduanHub', slug TEXT UNIQUE, logo TEXT, icon TEXT, accent TEXT DEFAULT '#2563eb', terminology TEXT DEFAULT 'Complaint', timezone TEXT DEFAULT 'Asia/Jakarta', ticket_prefix TEXT DEFAULT 'ADU', ticket_format TEXT DEFAULT '{prefix}-{year}-{number:05d}', mpwa_url TEXT, mpwa_key TEXT, mpwa_sender TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY, org_id INTEGER NOT NULL, name TEXT NOT NULL, email TEXT UNIQUE NOT NULL, password TEXT NOT NULL, role TEXT NOT NULL CHECK(role IN ('owner','admin','supervisor','agent','viewer')), unit TEXT, active INTEGER DEFAULT 1, last_login TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(org_id) REFERENCES organizations(id));
 CREATE TABLE IF NOT EXISTS contacts(id INTEGER PRIMARY KEY, org_id INTEGER NOT NULL, name TEXT, phone TEXT NOT NULL, location TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, UNIQUE(org_id,phone), FOREIGN KEY(org_id) REFERENCES organizations(id));
 CREATE TABLE IF NOT EXISTS tickets(id INTEGER PRIMARY KEY, org_id INTEGER NOT NULL, contact_id INTEGER NOT NULL, code TEXT UNIQUE, subject TEXT NOT NULL, category TEXT DEFAULT 'General', priority TEXT DEFAULT 'normal', status TEXT DEFAULT 'new', unit TEXT, assignee_id INTEGER, sla_due TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, updated_at TEXT DEFAULT CURRENT_TIMESTAMP, closed_at TEXT, FOREIGN KEY(org_id) REFERENCES organizations(id), FOREIGN KEY(contact_id) REFERENCES contacts(id), FOREIGN KEY(assignee_id) REFERENCES users(id));
@@ -103,7 +103,7 @@ def init_db():
     os.makedirs(os.path.dirname(DB), exist_ok=True); os.makedirs(UPLOAD_DIR, exist_ok=True)
     con=sqlite3.connect(DB, timeout=30); con.executescript(SCHEMA)
     migrations={
-      "organizations":{"icon":"TEXT","timezone":"TEXT DEFAULT 'Asia/Jakarta'","ticket_prefix":"TEXT DEFAULT 'ADU'","ticket_format":"TEXT DEFAULT '{prefix}-{year}-{number:05d}'"},
+      "organizations":{"app_name":"TEXT DEFAULT 'AduanHub'","icon":"TEXT","timezone":"TEXT DEFAULT 'Asia/Jakarta'","ticket_prefix":"TEXT DEFAULT 'ADU'","ticket_format":"TEXT DEFAULT '{prefix}-{year}-{number:05d}'"},
       "messages":{"attachment_path":"TEXT","attachment_name":"TEXT","attachment_type":"TEXT","delivery_status":"TEXT DEFAULT 'received'"},
       "flow_configs":{"forward_template_id":"TEXT","forward_template_en":"TEXT","status_template_id":"TEXT","status_template_en":"TEXT","unavailable_id":"TEXT","unavailable_en":"TEXT","menu_items":"TEXT DEFAULT '[]'","ai_enabled":"INTEGER DEFAULT 0","ai_prompt":"TEXT","ai_confidence":"REAL DEFAULT .8","session_timeout_minutes":"INTEGER DEFAULT 30"}
     }
@@ -184,7 +184,7 @@ def ctx():
     if session.get("org_id"):
         unread=db().execute("SELECT count(*) FROM notifications WHERE org_id=? AND read_at IS NULL AND (user_id IS NULL OR user_id=?)",(session["org_id"],session.get("uid"))).fetchone()[0]
     brand=None
-    if session.get("org_id"): brand=db().execute("SELECT name,logo,icon,accent,terminology,timezone FROM organizations WHERE id=?",(session["org_id"],)).fetchone()
+    if session.get("org_id"): brand=db().execute("SELECT name,app_name,logo,icon,accent,terminology,timezone FROM organizations WHERE id=?",(session["org_id"],)).fetchone()
     def localdt(value):
         if not value: return "-"
         try:
@@ -240,7 +240,7 @@ def login():
         if u and check_password_hash(u["password"],request.form["password"]):
             remember=request.form.get("remember")=="1"; session.clear(); session.permanent=remember; session.update(uid=u["id"],org_id=u["org_id"],name=u["name"],role=u["role"],org_name=u["org_name"]); db().execute("UPDATE users SET last_login=CURRENT_TIMESTAMP WHERE id=?",(u["id"],)); db().commit(); return redirect(url_for("dashboard"))
         flash("Invalid credentials","error")
-    login_brand=db().execute("SELECT name,logo,icon,accent,terminology FROM organizations ORDER BY id LIMIT 1").fetchone()
+    login_brand=db().execute("SELECT name,app_name,logo,icon,accent,terminology FROM organizations ORDER BY id LIMIT 1").fetchone()
     return render_template("login.html",login_brand=login_brand)
 
 @app.route("/logout")
@@ -364,17 +364,22 @@ def toggle_user(uid):
 @login_required
 @roles("owner","admin")
 def settings():
+    section=request.args.get("section","general")
+    if section not in ("general","whatsapp","units","categories"): section="general"
     if request.method=="POST":
+        section=request.form.get("section","general")
         org=db().execute("SELECT * FROM organizations WHERE id=?",(session["org_id"],)).fetchone(); logo=org["logo"]; icon=org["icon"]
+        if section=="whatsapp":
+            db().execute("UPDATE organizations SET mpwa_url=?,mpwa_key=?,mpwa_sender=? WHERE id=?",(request.form.get("mpwa_url","").strip(),request.form.get("mpwa_key","").strip(),request.form.get("mpwa_sender","").strip(),session["org_id"])); db().commit(); audit("organization.mpwa_updated","organization",session["org_id"]); flash("Koneksi WhatsApp berhasil disimpan.","success"); return redirect(url_for("settings",section="whatsapp"))
         try:
             if request.files.get("logo") and request.files["logo"].filename: logo=store_upload(file=request.files["logo"])[0]
             if request.files.get("icon") and request.files["icon"].filename: icon=store_upload(file=request.files["icon"])[0]
-        except ValueError as e: flash(str(e),"error"); return redirect(url_for("settings"))
+        except ValueError as e: flash(str(e),"error"); return redirect(url_for("settings",section="general"))
         prefix="".join(c for c in request.form.get("ticket_prefix","ADU").upper() if c.isalnum())[:12] or "ADU"; ticket_format=request.form.get("ticket_format","{prefix}-{year}-{number:05d}").strip()[:80]
         try: ticket_format.format_map({"prefix":prefix,"year":2026,"month":"08","day":"13","number":1})
-        except (KeyError,ValueError): flash("Format nomor aduan tidak valid.","error"); return redirect(url_for("settings")+"#general")
-        db().execute("UPDATE organizations SET name=?,accent=?,terminology=?,timezone=?,ticket_prefix=?,ticket_format=?,logo=?,icon=?,mpwa_url=?,mpwa_key=?,mpwa_sender=? WHERE id=?",(request.form["name"],request.form["accent"],request.form["terminology"],request.form.get("timezone","Asia/Jakarta"),prefix,ticket_format,logo,icon,request.form["mpwa_url"],request.form["mpwa_key"],request.form["mpwa_sender"],session["org_id"])); db().commit(); session["org_name"]=request.form["name"]; audit("organization.updated","organization",session["org_id"]); flash("Pengaturan berhasil disimpan","success")
-    org=db().execute("SELECT * FROM organizations WHERE id=?",(session["org_id"],)).fetchone(); units=db().execute("SELECT * FROM units WHERE org_id=? ORDER BY name",(session["org_id"],)).fetchall(); categories=db().execute("SELECT c.*,(SELECT count(*) FROM tickets t WHERE t.org_id=c.org_id AND t.category=c.name) usage_count FROM categories c WHERE c.org_id=? ORDER BY c.name",(session["org_id"],)).fetchall(); return render_template("settings.html",org=org,units=units,categories=categories)
+        except (KeyError,ValueError): flash("Format nomor aduan tidak valid.","error"); return redirect(url_for("settings",section="general"))
+        db().execute("UPDATE organizations SET name=?,app_name=?,accent=?,terminology=?,timezone=?,ticket_prefix=?,ticket_format=?,logo=?,icon=? WHERE id=?",(request.form["name"],request.form.get("app_name","AduanHub").strip()[:60] or "AduanHub",request.form["accent"],request.form["terminology"],request.form.get("timezone","Asia/Jakarta"),prefix,ticket_format,logo,icon,session["org_id"])); db().commit(); session["org_name"]=request.form["name"]; audit("organization.updated","organization",session["org_id"]); flash("Pengaturan berhasil disimpan","success")
+    org=db().execute("SELECT * FROM organizations WHERE id=?",(session["org_id"],)).fetchone(); units=db().execute("SELECT * FROM units WHERE org_id=? ORDER BY name",(session["org_id"],)).fetchall(); categories=db().execute("SELECT c.*,(SELECT count(*) FROM tickets t WHERE t.org_id=c.org_id AND t.category=c.name) usage_count FROM categories c WHERE c.org_id=? ORDER BY c.name",(session["org_id"],)).fetchall(); return render_template("settings.html",org=org,units=units,categories=categories,section=section)
 
 @app.post("/categories")
 @login_required
@@ -385,7 +390,7 @@ def create_category():
     else:
         try: db().execute("INSERT INTO categories(org_id,name) VALUES(?,?)",(session["org_id"],name)); db().commit(); audit("category.created","category"); flash("Kategori berhasil ditambahkan.","success")
         except sqlite3.IntegrityError: flash("Kategori tersebut sudah tersedia.","error")
-    return redirect(url_for("settings")+"#categories")
+    return redirect(url_for("settings",section="categories"))
 
 @app.post("/categories/<int:category_id>/delete")
 @login_required
@@ -393,7 +398,7 @@ def create_category():
 def delete_category(category_id):
     category=db().execute("SELECT * FROM categories WHERE id=? AND org_id=?",(category_id,session["org_id"])).fetchone()
     if not category: return ("Not found",404)
-    db().execute("DELETE FROM categories WHERE id=?",(category_id,)); db().commit(); audit("category.deleted","category",category_id,{"name":category["name"]}); flash("Kategori dihapus dari pilihan. Aduan lama tetap menyimpan kategorinya.","success"); return redirect(url_for("settings")+"#categories")
+    db().execute("DELETE FROM categories WHERE id=?",(category_id,)); db().commit(); audit("category.deleted","category",category_id,{"name":category["name"]}); flash("Kategori dihapus dari pilihan. Aduan lama tetap menyimpan kategorinya.","success"); return redirect(url_for("settings",section="categories"))
 
 @app.post("/units")
 @login_required
@@ -402,7 +407,7 @@ def create_unit():
     try:
         db().execute("INSERT INTO units(org_id,name,officer_name,officer_phone) VALUES(?,?,?,?)",(session["org_id"],request.form["name"],request.form.get("officer_name"),request.form.get("officer_phone"))); db().commit(); audit("unit.created","unit"); flash("Responsible unit added","success")
     except sqlite3.IntegrityError: flash("Unit name already exists","error")
-    return redirect(url_for("settings"))
+    return redirect(url_for("settings",section="units"))
 
 @app.post("/units/<int:unit_id>/update")
 @login_required
@@ -411,11 +416,11 @@ def update_unit(unit_id):
     unit=db().execute("SELECT * FROM units WHERE id=? AND org_id=?",(unit_id,session["org_id"])).fetchone()
     if not unit: return ("Not found",404)
     name=request.form["name"].strip(); officer=request.form.get("officer_name","").strip(); phone=request.form.get("officer_phone","").strip()
-    if not name: flash("Unit name is required","error"); return redirect(url_for("settings")+"#units")
+    if not name: flash("Unit name is required","error"); return redirect(url_for("settings",section="units"))
     try:
         db().execute("UPDATE units SET name=?,officer_name=?,officer_phone=?,active=1 WHERE id=? AND org_id=?",(name,officer,phone,unit_id,session["org_id"])); db().execute("UPDATE tickets SET unit=? WHERE org_id=? AND unit=?",(name,session["org_id"],unit["name"])); db().commit(); audit("unit.updated","unit",unit_id,{"old_name":unit["name"],"new_name":name}); flash("Responsible unit updated","success")
     except sqlite3.IntegrityError: flash("Unit name already exists","error")
-    return redirect(url_for("settings")+"#units")
+    return redirect(url_for("settings",section="units"))
 
 @app.post("/units/<int:unit_id>/delete")
 @login_required
@@ -423,7 +428,7 @@ def update_unit(unit_id):
 def delete_unit(unit_id):
     unit=db().execute("SELECT name FROM units WHERE id=? AND org_id=?",(unit_id,session["org_id"])).fetchone()
     if not unit: return ("Not found",404)
-    db().execute("DELETE FROM units WHERE id=? AND org_id=?",(unit_id,session["org_id"])); db().commit(); audit("unit.deleted","unit",unit_id,{"name":unit["name"]}); flash("Responsible unit deleted","success"); return redirect(url_for("settings")+"#units")
+    db().execute("DELETE FROM units WHERE id=? AND org_id=?",(unit_id,session["org_id"])); db().commit(); audit("unit.deleted","unit",unit_id,{"name":unit["name"]}); flash("Responsible unit deleted","success"); return redirect(url_for("settings",section="units"))
 
 def report_rows():
     where=["t.org_id=?"]; params=[session["org_id"]]
