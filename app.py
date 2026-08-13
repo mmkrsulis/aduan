@@ -598,7 +598,7 @@ def flow_reply(org,phone,body,name,attachment=None):
     if step=="menu":
         selected=next((item for item in menu if str(item.get("key","")).upper()==command),None)
         if selected and selected.get("action")=="new":
-            form=("Silakan isi format berikut dalam satu pesan:\n\nNama:\nLokasi:\nAduan:\n\nAnda juga dapat melampirkan foto atau video." if lang=="id" else "Please complete this format in one message:\n\nName:\nLocation:\nComplaint:\n\nYou may also attach a photo or video.")
+            form=("Silakan isi format berikut dalam satu pesan:\n\nNama:\nAduan:\n\nAnda juga dapat melampirkan foto atau video." if lang=="id" else "Please complete this format in one message:\n\nName:\nComplaint:\n\nYou may also attach a photo or video.")
             return move("complaint_form",form,{})
         if selected and selected.get("action")=="status": return move("status","Silakan kirim nomor aduan Anda, contoh: DEM-2026-00001." if lang=="id" else "Please send your complaint number, for example: DEM-2026-00001.")
         if selected and selected.get("action")=="info": return move("menu",fill(flow["service_info_id" if lang=="id" else "service_info_en"],org))
