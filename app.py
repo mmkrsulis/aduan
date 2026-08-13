@@ -580,6 +580,12 @@ def flow_reply(org,phone,body,name,attachment=None):
     flow=db().execute("SELECT * FROM flow_configs WHERE org_id=?",(org["id"],)).fetchone()
     if not flow or not flow["enabled"]: return None
     state=db().execute("SELECT * FROM conversation_states WHERE org_id=? AND phone=?",(org["id"],phone)).fetchone(); command=body.strip().upper(); lang=state["language"] if state else flow["default_language"]; expired=False
+    if command in ("RESET","RESET SESSION","HAPUS SESI","ULANG SESI"):
+        db().execute("DELETE FROM conversation_states WHERE org_id=? AND phone=?",(org["id"],phone))
+        db().execute("UPDATE chat_requests SET status='cancelled' WHERE org_id=? AND phone=? AND status='pending'",(org["id"],phone)); db().commit()
+        db().execute("INSERT INTO conversation_states(org_id,phone,step,language,data,human_takeover) VALUES(?,?,?,?,?,0)",(org["id"],phone,"identity_choice",lang,"{}")); db().commit()
+        prompt=fill(flow["identity_prompt_id" if lang=="id" else "identity_prompt_en"],org)
+        return ("Sesi percakapan berhasil dihapus. Pengujian dimulai dari awal.\n\n" if lang=="id" else "The conversation session has been cleared. Testing starts from the beginning.\n\n")+prompt
     if state and flow["session_timeout_minutes"] and state["step"]!="menu":
         try: expired=(datetime.now(timezone.utc)-datetime.fromisoformat(state["updated_at"]).replace(tzinfo=timezone.utc)).total_seconds()>flow["session_timeout_minutes"]*60
         except (ValueError,TypeError): expired=False
