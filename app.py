@@ -357,7 +357,42 @@ def users():
 @login_required
 @roles("owner","admin")
 def toggle_user(uid):
-    if uid!=session["uid"]: db().execute("UPDATE users SET active=1-active WHERE id=? AND org_id=?",(uid,session["org_id"])); db().commit(); audit("user.toggled","user",uid)
+    user=db().execute("SELECT * FROM users WHERE id=? AND org_id=?",(uid,session["org_id"])).fetchone()
+    if not user: return ("Not found",404)
+    if uid==session["uid"]: flash("Anda tidak dapat menonaktifkan akun sendiri.","error")
+    elif user["role"]=="owner" and user["active"] and db().execute("SELECT count(*) FROM users WHERE org_id=? AND role='owner' AND active=1",(session["org_id"],)).fetchone()[0]<=1: flash("Owner aktif terakhir tidak dapat dinonaktifkan.","error")
+    else: db().execute("UPDATE users SET active=1-active WHERE id=?",(uid,)); db().commit(); audit("user.toggled","user",uid); flash("Status pengguna diperbarui.","success")
+    return redirect(url_for("users"))
+
+@app.post("/users/<int:uid>/update")
+@login_required
+@roles("owner","admin")
+def update_user(uid):
+    user=db().execute("SELECT * FROM users WHERE id=? AND org_id=?",(uid,session["org_id"])).fetchone()
+    if not user: return ("Not found",404)
+    role=request.form.get("role","agent")
+    if role not in ("owner","admin","supervisor","agent","viewer"): role="agent"
+    if user["role"]=="owner" and role!="owner" and db().execute("SELECT count(*) FROM users WHERE org_id=? AND role='owner'",(session["org_id"],)).fetchone()[0]<=1: flash("Owner terakhir tidak dapat diubah perannya.","error"); return redirect(url_for("users"))
+    password=request.form.get("password","")
+    if password and len(password)<8: flash("Kata sandi baru minimal 8 karakter.","error"); return redirect(url_for("users"))
+    try:
+        if password: db().execute("UPDATE users SET name=?,email=?,role=?,unit=?,password=? WHERE id=?",(request.form["name"].strip(),request.form["email"].strip().lower(),role,request.form.get("unit","").strip(),generate_password_hash(password),uid))
+        else: db().execute("UPDATE users SET name=?,email=?,role=?,unit=? WHERE id=?",(request.form["name"].strip(),request.form["email"].strip().lower(),role,request.form.get("unit","").strip(),uid))
+        db().commit(); audit("user.updated","user",uid,{"role":role}); flash("Pengguna berhasil diperbarui.","success")
+        if uid==session["uid"]: session.update(name=request.form["name"].strip(),role=role)
+    except sqlite3.IntegrityError: flash("Email sudah digunakan pengguna lain.","error")
+    return redirect(url_for("users"))
+
+@app.post("/users/<int:uid>/delete")
+@login_required
+@roles("owner","admin")
+def delete_user(uid):
+    user=db().execute("SELECT * FROM users WHERE id=? AND org_id=?",(uid,session["org_id"])).fetchone()
+    if not user: return ("Not found",404)
+    if uid==session["uid"]: flash("Anda tidak dapat menghapus akun sendiri.","error")
+    elif user["role"]=="owner" and db().execute("SELECT count(*) FROM users WHERE org_id=? AND role='owner'",(session["org_id"],)).fetchone()[0]<=1: flash("Owner terakhir tidak dapat dihapus.","error")
+    else:
+        db().execute("UPDATE tickets SET assignee_id=NULL WHERE assignee_id=?",(uid,)); db().execute("DELETE FROM notifications WHERE user_id=?",(uid,)); db().execute("UPDATE audit_logs SET user_id=NULL WHERE user_id=?",(uid,)); db().execute("DELETE FROM users WHERE id=?",(uid,)); db().commit(); audit("user.deleted","user",uid,{"email":user["email"]}); flash("Pengguna berhasil dihapus.","success")
     return redirect(url_for("users"))
 
 @app.route("/settings",methods=["GET","POST"])
