@@ -1,10 +1,11 @@
-import os, sqlite3, json, secrets, csv, io, base64, uuid, re
+import os, sqlite3, json, secrets, csv, io, base64, uuid, re, hashlib
 from datetime import datetime, timezone, timedelta
 from functools import wraps
 from flask import Flask, render_template, request, redirect, url_for, session, flash, jsonify, g, Response, send_file, send_from_directory
 from werkzeug.utils import secure_filename
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.middleware.proxy_fix import ProxyFix
+from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
 import requests
 from zoneinfo import ZoneInfo
 from reportlab.lib import colors
@@ -16,9 +17,13 @@ app = Flask(__name__)
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
 app.secret_key = os.getenv("SECRET_KEY", secrets.token_hex(32))
 app.config.update(MAX_CONTENT_LENGTH=8*1024*1024,SESSION_COOKIE_HTTPONLY=True,SESSION_COOKIE_SAMESITE="Lax",SESSION_COOKIE_SECURE=os.getenv("COOKIE_SECURE","false").lower()=="true",PERMANENT_SESSION_LIFETIME=timedelta(days=30))
+api_tokens=URLSafeTimedSerializer(app.secret_key,salt="aduanhub-mobile-v1")
 DB = os.getenv("DATABASE_PATH", os.path.join(os.path.dirname(__file__), "aduan.db"))
 UPLOAD_DIR = os.getenv("UPLOAD_DIR", os.path.join(os.path.dirname(DB), "uploads"))
 ALLOWED_MEDIA = {"image/jpeg":"jpg","image/png":"png","image/webp":"webp","video/mp4":"mp4","audio/mpeg":"mp3","audio/ogg":"ogg","application/pdf":"pdf"}
+
+def api_token_version(password_hash):
+    return hashlib.sha256((password_hash or "").encode()).hexdigest()[:16]
 
 ID = {
  "Overview":"Ringkasan","Service intelligence at a glance":"Ringkasan kinerja layanan",
@@ -64,7 +69,7 @@ def csrf_token():
 def csrf_protect():
     # Credentials authenticate login; exempt it to avoid stale-token errors after
     # logout, browser back/forward cache, or signing in from multiple tabs.
-    if request.method=="POST" and request.endpoint not in ("webhook","login"):
+    if request.method=="POST" and request.endpoint not in ("webhook","login") and not request.path.startswith("/api/"):
         expected=session.get("csrf",""); supplied=request.form.get("csrf_token","") or request.headers.get("X-CSRF-Token","")
         if not expected or not secrets.compare_digest(expected,supplied): return ("Invalid or expired form token",400)
 
@@ -391,8 +396,8 @@ def delete_ticket(tid):
         except FileNotFoundError: pass
     flash(f"Aduan {ticket_row['code']} telah dihapus permanen.","success"); return redirect(url_for("tickets"))
 
-def send_mpwa(phone,body):
-    org=db().execute("SELECT * FROM organizations WHERE id=?",(session["org_id"],)).fetchone(); base=org["mpwa_url"] or os.getenv("MPWA_BASE_URL",""); key=org["mpwa_key"] or os.getenv("MPWA_API_KEY",""); sender=org["mpwa_sender"] or os.getenv("MPWA_SENDER","")
+def send_mpwa_for_org(org,phone,body):
+    base=org["mpwa_url"] or os.getenv("MPWA_BASE_URL",""); key=org["mpwa_key"] or os.getenv("MPWA_API_KEY",""); sender=org["mpwa_sender"] or os.getenv("MPWA_SENDER","")
     if not (base and key and sender): return False,"Reply saved; configure MPWA credentials to transmit it."
     chunks=[]; remaining=(body or "").strip()
     while remaining:
@@ -415,14 +420,22 @@ def send_mpwa(phone,body):
         return True,("Message sent through MPWA." if total==1 else f"Complete message sent in {total} parts through MPWA.")
     except requests.RequestException as e: return False,f"MPWA connection failed: {e}"
 
-def send_mpwa_media(phone,url,mime,caption=""):
-    org=db().execute("SELECT * FROM organizations WHERE id=?",(session["org_id"],)).fetchone(); base=org["mpwa_url"] or os.getenv("MPWA_BASE_URL",""); key=org["mpwa_key"] or os.getenv("MPWA_API_KEY",""); sender=org["mpwa_sender"] or os.getenv("MPWA_SENDER","")
+def send_mpwa(phone,body):
+    org=db().execute("SELECT * FROM organizations WHERE id=?",(session["org_id"],)).fetchone()
+    return send_mpwa_for_org(org,phone,body)
+
+def send_mpwa_media_for_org(org,phone,url,mime,caption=""):
+    base=org["mpwa_url"] or os.getenv("MPWA_BASE_URL",""); key=org["mpwa_key"] or os.getenv("MPWA_API_KEY",""); sender=org["mpwa_sender"] or os.getenv("MPWA_SENDER","")
     if not (base and key and sender): return False,"Konfigurasikan koneksi MPWA terlebih dahulu."
     media_type="image" if mime.startswith("image/") else "video" if mime.startswith("video/") else "audio" if mime.startswith("audio/") else "document"
     try:
         r=requests.post(base.rstrip("/")+"/send-media",data={"api_key":key,"sender":sender,"number":phone,"media_type":media_type,"url":url,"caption":caption},timeout=30); payload=r.json() if r.content else {}; ok=r.ok and payload.get("status") is True
         return ok,("Lampiran dikirim melalui MPWA." if ok else (payload.get("msg") or payload.get("message") or f"MPWA menolak lampiran ({r.status_code})."))
     except (requests.RequestException,ValueError) as e: return False,f"Pengiriman lampiran gagal: {e}"
+
+def send_mpwa_media(phone,url,mime,caption=""):
+    org=db().execute("SELECT * FROM organizations WHERE id=?",(session["org_id"],)).fetchone()
+    return send_mpwa_media_for_org(org,phone,url,mime,caption)
 
 @app.route("/users",methods=["GET","POST"])
 @login_required
@@ -723,6 +736,138 @@ def flow_reply(org,phone,body,name,attachment=None):
         db().execute("INSERT INTO messages(ticket_id,direction,body,sender,attachment_path,attachment_name,attachment_type) VALUES(?,?,?,?,?,?,?)",(tid,"in",data["description"],data["name"],media.get("path"),media.get("name"),media.get("type"))); db().execute("INSERT INTO notifications(org_id,ticket_id,title,body) VALUES(?,?,?,?)",(org["id"],tid,"Aduan WhatsApp baru",f"{data['name']}: {data['description'][:120]}")); db().execute("UPDATE conversation_states SET step='ticket_chat',data=?,human_takeover=1,updated_at=CURRENT_TIMESTAMP WHERE id=?",(json.dumps({"ticket_id":tid}),state["id"])); db().commit()
         return fill(flow["completion_id" if lang=="id" else "completion_en"],org,code=code)
     return move("menu",fill(welcome,org),{})
+
+def api_auth(fn):
+    @wraps(fn)
+    def inner(*args,**kwargs):
+        header=request.headers.get("Authorization","")
+        if not header.startswith("Bearer "): return jsonify(error="authentication_required"),401
+        try: payload=api_tokens.loads(header[7:],max_age=30*24*3600)
+        except SignatureExpired: return jsonify(error="token_expired"),401
+        except BadSignature: return jsonify(error="invalid_token"),401
+        user=db().execute("SELECT u.*,o.name org_name,o.app_name,o.logo,o.icon,o.accent,o.terminology,o.timezone FROM users u JOIN organizations o ON o.id=u.org_id WHERE u.id=? AND u.active=1",(payload.get("uid"),)).fetchone()
+        if not user or payload.get("v")!=api_token_version(user["password"]): return jsonify(error="invalid_token"),401
+        g.api_user=user
+        return fn(*args,**kwargs)
+    return inner
+
+def api_can_access(user,ticket_row):
+    if user["role"] in ("owner","admin"): return True
+    if not ticket_row["unit"] or ticket_row["unit"]!=(user["unit"] or ""): return False
+    return not (user["role"]=="agent" and ticket_row["assignee_id"] and ticket_row["assignee_id"]!=user["id"])
+
+def api_ticket_dict(row):
+    return {key:row[key] for key in ("id","code","subject","category","priority","status","unit","assignee_id","created_at","updated_at","closed_at")} | {"contact":{"name":row["contact"],"phone":row["phone"],"location":row["location"] or "-"},"assignee":row["assignee"] if "assignee" in row.keys() else None}
+
+@app.post("/api/v1/auth/login")
+def api_login():
+    body=request.get_json(silent=True) or {}; email=str(body.get("email","")).strip().lower(); password=str(body.get("password", ""))
+    user=db().execute("SELECT u.*,o.name org_name,o.app_name,o.logo,o.icon,o.accent,o.terminology FROM users u JOIN organizations o ON o.id=u.org_id WHERE u.email=? AND u.active=1",(email,)).fetchone()
+    if not user or not check_password_hash(user["password"],password): return jsonify(error="invalid_credentials",message="Email atau kata sandi tidak sesuai."),401
+    token=api_tokens.dumps({"uid":user["id"],"v":api_token_version(user["password"])}); db().execute("UPDATE users SET last_login=CURRENT_TIMESTAMP WHERE id=?",(user["id"],)); db().commit()
+    return jsonify(token=token,user={"id":user["id"],"name":user["name"],"email":user["email"],"role":user["role"],"unit":user["unit"] or ""},organization={"name":user["org_name"],"app_name":user["app_name"],"accent":user["accent"],"logo":url_for("media_file",filename=user["logo"],_external=True) if user["logo"] else None})
+
+@app.get("/api/v1/me")
+@api_auth
+def api_me():
+    u=g.api_user
+    unread=db().execute("SELECT count(*) FROM notifications WHERE org_id=? AND user_id=? AND read_at IS NULL",(u["org_id"],u["id"])).fetchone()[0] if u["role"] not in ("owner","admin") else db().execute("SELECT count(*) FROM notifications WHERE org_id=? AND read_at IS NULL AND (user_id IS NULL OR user_id=?)",(u["org_id"],u["id"])).fetchone()[0]
+    return jsonify(user={"id":u["id"],"name":u["name"],"email":u["email"],"role":u["role"],"unit":u["unit"] or ""},organization={"name":u["org_name"],"app_name":u["app_name"],"accent":u["accent"],"logo":url_for("media_file",filename=u["logo"],_external=True) if u["logo"] else None},unread=unread)
+
+def api_scope(user,alias="t"):
+    if user["role"] in ("owner","admin"): return "1=1",[]
+    if user["role"]=="agent": return f"{alias}.unit=? AND ({alias}.assignee_id IS NULL OR {alias}.assignee_id=?)",[user["unit"] or "",user["id"]]
+    return f"{alias}.unit=?",[user["unit"] or ""]
+
+@app.get("/api/v1/dashboard")
+@api_auth
+def api_dashboard():
+    u=g.api_user; scope,params=api_scope(u); base=f"t.org_id=? AND {scope}"; args=[u["org_id"],*params]
+    counts={status:db().execute(f"SELECT count(*) FROM tickets t WHERE {base} AND status=?",[*args,status]).fetchone()[0] for status in ("new","assigned","in_progress","waiting","resolved")}; counts["all"]=db().execute(f"SELECT count(*) FROM tickets t WHERE {base}",args).fetchone()[0]
+    return jsonify(counts=counts)
+
+@app.get("/api/v1/tickets")
+@api_auth
+def api_tickets():
+    u=g.api_user; scope,scope_params=api_scope(u); where=["t.org_id=?",scope]; params=[u["org_id"],*scope_params]
+    status=request.args.get("status","").strip(); query=request.args.get("q","").strip()
+    if status: where.append("t.status=?"); params.append(status)
+    if query: where.append("(t.code LIKE ? OR t.subject LIKE ? OR c.name LIKE ?)"); params.extend([f"%{query}%"]*3)
+    rows=db().execute("SELECT t.*,c.name contact,c.phone,c.location,u.name assignee FROM tickets t JOIN contacts c ON c.id=t.contact_id LEFT JOIN users u ON u.id=t.assignee_id WHERE "+" AND ".join(where)+" ORDER BY t.updated_at DESC LIMIT 200",params).fetchall()
+    return jsonify(tickets=[api_ticket_dict(row) for row in rows])
+
+@app.get("/api/v1/tickets/<int:tid>")
+@api_auth
+def api_ticket_detail(tid):
+    u=g.api_user; t=db().execute("SELECT t.*,c.name contact,c.phone,c.location,u.name assignee FROM tickets t JOIN contacts c ON c.id=t.contact_id LEFT JOIN users u ON u.id=t.assignee_id WHERE t.id=? AND t.org_id=?",(tid,u["org_id"])).fetchone()
+    if not t: return jsonify(error="not_found"),404
+    if not api_can_access(u,t): return jsonify(error="forbidden"),403
+    messages=db().execute("SELECT * FROM messages WHERE ticket_id=? ORDER BY id",(tid,)).fetchall()
+    return jsonify(ticket=api_ticket_dict(t),can_manage=u["role"] in ("owner","admin"),can_reply=t["status"] not in ("resolved","closed") and (u["role"] in ("owner","admin") or (u["role"] in ("supervisor","agent") and bool(t["unit"]))),allowed_statuses=list(("new","verified","assigned","in_progress","waiting","resolved","closed") if u["role"] in ("owner","admin") else ("in_progress","waiting","resolved")),messages=[{"id":m["id"],"direction":m["direction"],"body":m["body"],"sender":m["sender"],"internal":bool(m["internal"]),"attachment_url":url_for("media_file",filename=m["attachment_path"],_external=True) if m["attachment_path"] else None,"attachment_name":m["attachment_name"],"attachment_type":m["attachment_type"],"delivery_status":m["delivery_status"],"created_at":m["created_at"]} for m in messages])
+
+@app.get("/api/v1/assignment-options")
+@api_auth
+def api_assignment_options():
+    u=g.api_user
+    if u["role"] not in ("owner","admin"): return jsonify(error="forbidden"),403
+    units=db().execute("SELECT id,name,officer_name,officer_phone FROM units WHERE org_id=? AND active=1 ORDER BY name",(u["org_id"],)).fetchall(); users=db().execute("SELECT id,name,role,unit FROM users WHERE org_id=? AND active=1 AND role IN ('supervisor','agent') ORDER BY unit,name",(u["org_id"],)).fetchall()
+    return jsonify(units=[dict(row) for row in units],users=[dict(row) for row in users])
+
+@app.post("/api/v1/tickets/<int:tid>/assign")
+@api_auth
+def api_ticket_assign(tid):
+    u=g.api_user
+    if u["role"] not in ("owner","admin"): return jsonify(error="forbidden"),403
+    t=db().execute("SELECT t.*,c.name contact,c.location FROM tickets t JOIN contacts c ON c.id=t.contact_id WHERE t.id=? AND t.org_id=?",(tid,u["org_id"])).fetchone(); body=request.get_json(silent=True) or {}; unit=db().execute("SELECT * FROM units WHERE id=? AND org_id=? AND active=1",(body.get("unit_id"),u["org_id"])).fetchone()
+    if not t or not unit: return jsonify(error="not_found"),404
+    assignee=body.get("assignee_id")
+    if assignee and not db().execute("SELECT 1 FROM users WHERE id=? AND org_id=? AND unit=? AND active=1 AND role IN ('supervisor','agent')",(assignee,u["org_id"],unit["name"])).fetchone(): return jsonify(error="invalid_assignee",message="Petugas harus berasal dari unit yang dipilih."),400
+    db().execute("UPDATE tickets SET unit=?,assignee_id=?,status='assigned',updated_at=CURRENT_TIMESTAMP WHERE id=?",(unit["name"],assignee,tid)); notify_assigned_users(u["org_id"],tid,"Disposisi aduan baru",f"{t['code']} telah diteruskan ke {unit['name']}. Login untuk membaca dan menanggapi.",unit["name"],int(assignee) if assignee else None)
+    if unit["officer_phone"]:
+        flow=db().execute("SELECT * FROM flow_configs WHERE org_id=?",(u["org_id"],)).fetchone(); org=db().execute("SELECT * FROM organizations WHERE id=?",(u["org_id"],)).fetchone(); original=db().execute("SELECT body FROM messages WHERE ticket_id=? AND direction='in' AND internal=0 ORDER BY id LIMIT 1",(tid,)).fetchone(); template=flow["forward_template_id"]
+        text=fill(template,org,{"code":t["code"],"description":original["body"] if original else t["subject"],"name":t["contact"],"location":t["location"],"priority":t["priority"],"unit":unit["name"],"officer":unit["officer_name"]})+f"\n\nLogin ke aplikasi untuk menanggapi:\n{request.url_root.rstrip('/')}/tickets/{tid}"; send_mpwa_for_org(org,unit["officer_phone"],text)
+    db().execute("INSERT INTO audit_logs(org_id,user_id,action,entity,entity_id,metadata) VALUES(?,?,?,?,?,?)",(u["org_id"],u["id"],"ticket.forwarded","ticket",tid,json.dumps({"unit":unit["name"],"assignee":assignee}))); db().commit(); return jsonify(status="assigned",unit=unit["name"])
+
+@app.post("/api/v1/tickets/<int:tid>/reply")
+@api_auth
+def api_ticket_reply(tid):
+    u=g.api_user; t=db().execute("SELECT t.*,c.phone FROM tickets t JOIN contacts c ON c.id=t.contact_id WHERE t.id=? AND t.org_id=?",(tid,u["org_id"])).fetchone()
+    if not t: return jsonify(error="not_found"),404
+    if not api_can_access(u,t) or u["role"] not in ("owner","admin","supervisor","agent") or t["status"] in ("resolved","closed") or (u["role"] not in ("owner","admin") and not t["unit"]): return jsonify(error="forbidden"),403
+    payload=request.get_json(silent=True) or {}; body=(request.form.get("body") if request.form else payload.get("body") or "").strip(); upload=request.files.get("attachment"); stored=None
+    if upload and upload.filename:
+        try: stored=store_upload(file=upload)
+        except ValueError as exc: return jsonify(error="invalid_attachment",message=str(exc)),400
+    if not body and not stored: return jsonify(error="empty_message"),400
+    org=db().execute("SELECT * FROM organizations WHERE id=?",(u["org_id"],)).fetchone()
+    if stored: ok,message=send_mpwa_media_for_org(org,t["phone"],request.url_root.rstrip("/")+url_for("media_file",filename=stored[0]),stored[2],body)
+    else: ok,message=send_mpwa_for_org(org,t["phone"],body)
+    if not ok: return jsonify(error="delivery_failed",message=message),502
+    db().execute("INSERT INTO messages(ticket_id,direction,body,sender,attachment_path,attachment_name,attachment_type,delivery_status) VALUES(?,?,?,?,?,?,?,'sent')",(tid,"out",body,u["name"],*(stored or (None,None,None)))); db().execute("UPDATE tickets SET updated_at=CURRENT_TIMESTAMP WHERE id=?",(tid,)); db().execute("INSERT INTO conversation_states(org_id,phone,step,language,data,human_takeover) VALUES(?,?,?,?,?,1) ON CONFLICT(org_id,phone) DO UPDATE SET step='human_chat',human_takeover=1,updated_at=CURRENT_TIMESTAMP",(u["org_id"],t["phone"],"human_chat","id",json.dumps({"ticket_id":tid}))); db().execute("INSERT INTO audit_logs(org_id,user_id,action,entity,entity_id,metadata) VALUES(?,?,?,?,?,?)",(u["org_id"],u["id"],"reply.sent","ticket",tid,"{}")); db().commit()
+    return jsonify(status="sent")
+
+@app.post("/api/v1/tickets/<int:tid>/status")
+@api_auth
+def api_ticket_status(tid):
+    u=g.api_user; t=db().execute("SELECT t.*,c.phone FROM tickets t JOIN contacts c ON c.id=t.contact_id WHERE t.id=? AND t.org_id=?",(tid,u["org_id"])).fetchone(); body=request.get_json(silent=True) or {}; status=body.get("status")
+    if not t: return jsonify(error="not_found"),404
+    if not api_can_access(u,t) or u["role"] not in ("owner","admin","supervisor","agent"): return jsonify(error="forbidden"),403
+    allowed=("new","verified","assigned","in_progress","waiting","resolved","closed") if u["role"] in ("owner","admin") else ("in_progress","waiting","resolved")
+    if status not in allowed: return jsonify(error="invalid_status"),400
+    db().execute("UPDATE tickets SET status=?,updated_at=CURRENT_TIMESTAMP,closed_at=CASE WHEN ? IN ('resolved','closed') THEN COALESCE(closed_at,CURRENT_TIMESTAMP) ELSE NULL END WHERE id=?",(status,status,tid)); db().execute("INSERT INTO audit_logs(org_id,user_id,action,entity,entity_id,metadata) VALUES(?,?,?,?,?,?)",(u["org_id"],u["id"],"ticket.status_updated","ticket",tid,json.dumps({"status":status})))
+    if status in ("resolved","closed"): db().execute("DELETE FROM conversation_states WHERE org_id=? AND phone=?",(u["org_id"],t["phone"]))
+    db().commit(); return jsonify(status=status)
+
+@app.get("/api/v1/notifications")
+@api_auth
+def api_notifications():
+    u=g.api_user; condition="(user_id IS NULL OR user_id=?)" if u["role"] in ("owner","admin") else "user_id=?"; rows=db().execute(f"SELECT n.*,t.code FROM notifications n LEFT JOIN tickets t ON t.id=n.ticket_id WHERE n.org_id=? AND {condition} ORDER BY n.id DESC LIMIT 100",(u["org_id"],u["id"])).fetchall()
+    return jsonify(notifications=[{"id":n["id"],"ticket_id":n["ticket_id"],"code":n["code"],"title":n["title"],"body":n["body"],"read":bool(n["read_at"]),"created_at":n["created_at"]} for n in rows])
+
+@app.post("/api/v1/notifications/read")
+@api_auth
+def api_notifications_read():
+    u=g.api_user; condition="(user_id IS NULL OR user_id=?)" if u["role"] in ("owner","admin") else "user_id=?"; db().execute(f"UPDATE notifications SET read_at=CURRENT_TIMESTAMP WHERE org_id=? AND {condition} AND read_at IS NULL",(u["org_id"],u["id"])); db().commit(); return jsonify(status="ok")
 
 @app.post("/webhooks/mpwa/<slug>")
 def webhook(slug):
