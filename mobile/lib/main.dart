@@ -227,8 +227,9 @@ class _LoginScreenState extends State<LoginScreen> {
       final token = (payload['token'] ?? '').toString();
       if (payload['v'] != 1 ||
           !Uri.parse(server).isScheme('https') ||
-          token.isEmpty)
+          token.isEmpty) {
         throw const FormatException();
+      }
       final base = '$server/api/v1';
       final result = await ApiClient(
         null,
