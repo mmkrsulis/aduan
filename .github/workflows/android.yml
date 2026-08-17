@@ -1,5 +1,9 @@
 name: Android release
 
+concurrency:
+  group: android-release
+  cancel-in-progress: true
+
 on:
   workflow_dispatch:
   push:
