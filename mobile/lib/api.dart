@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 
@@ -5,6 +6,7 @@ const defaultApiBase = String.fromEnvironment(
   'API_BASE_URL',
   defaultValue: 'https://aduanhub.rekadev.site/api/v1',
 );
+const requestTimeout = Duration(seconds: 15);
 
 class ApiException implements Exception {
   final String message;
@@ -39,15 +41,17 @@ class ApiClient {
   }
 
   Future<Map<String, dynamic>> login(String email, String password) async {
-    final response = await http.post(
-      Uri.parse('$baseUrl/auth/login'),
-      headers: headers,
-      body: jsonEncode({
-        'email': email,
-        'password': password,
-        'device_name': 'Android',
-      }),
-    );
+    final response = await http
+        .post(
+          Uri.parse('$baseUrl/auth/login'),
+          headers: headers,
+          body: jsonEncode({
+            'email': email,
+            'password': password,
+            'device_name': 'Android',
+          }),
+        )
+        .timeout(requestTimeout);
     return _decode(response);
   }
 
@@ -56,7 +60,9 @@ class ApiClient {
     Map<String, String>? query,
   ]) async {
     final uri = Uri.parse('$baseUrl$path').replace(queryParameters: query);
-    return _decode(await http.get(uri, headers: headers));
+    return _decode(
+      await http.get(uri, headers: headers).timeout(requestTimeout),
+    );
   }
 
   Future<Map<String, dynamic>> post(
@@ -64,11 +70,13 @@ class ApiClient {
     Map<String, dynamic> body,
   ) async {
     return _decode(
-      await http.post(
-        Uri.parse('$baseUrl$path'),
-        headers: headers,
-        body: jsonEncode(body),
-      ),
+      await http
+          .post(
+            Uri.parse('$baseUrl$path'),
+            headers: headers,
+            body: jsonEncode(body),
+          )
+          .timeout(requestTimeout),
     );
   }
 
@@ -90,7 +98,7 @@ class ApiClient {
           ..files.add(
             await http.MultipartFile.fromPath('attachment', attachmentPath),
           );
-    final streamed = await request.send();
+    final streamed = await request.send().timeout(requestTimeout);
     return _decode(await http.Response.fromStream(streamed));
   }
 }

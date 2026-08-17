@@ -18,6 +18,21 @@ class MobileNotifications {
   static ApiClient? _pushApi;
   static StreamSubscription<String>? _tokenSubscription;
   static bool _listenersReady = false;
+  static Future<bool>? _firebaseBootstrap;
+
+  static Future<bool> ensureFirebase() =>
+      _firebaseBootstrap ??= _initializeFirebase();
+
+  static Future<bool> _initializeFirebase() async {
+    try {
+      if (Firebase.apps.isEmpty) {
+        await Firebase.initializeApp().timeout(const Duration(seconds: 8));
+      }
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
 
   static void _handleTap(NotificationResponse response) {
     final ticketId = int.tryParse(response.payload ?? '');
@@ -47,6 +62,7 @@ class MobileNotifications {
 
   static Future<void> bindFirebase(ApiClient api) async {
     _pushApi = api;
+    if (!await ensureFirebase()) return;
     await FirebaseMessaging.instance.requestPermission(
       alert: true,
       badge: true,
@@ -67,6 +83,7 @@ class MobileNotifications {
   }
 
   static Future<void> unbindFirebase() async {
+    if (!await ensureFirebase()) return;
     final token = await FirebaseMessaging.instance.getToken();
     final api = _pushApi;
     if (token != null && api != null) {
@@ -184,7 +201,7 @@ class MobileNotifications {
 @pragma('vm:entry-point')
 Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   WidgetsFlutterBinding.ensureInitialized();
-  await Firebase.initializeApp();
+  if (!await MobileNotifications.ensureFirebase()) return;
   await MobileNotifications.initialize();
   await MobileNotifications.showRemoteMessage(message);
 }

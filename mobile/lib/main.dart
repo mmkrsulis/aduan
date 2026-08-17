@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
-import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:file_picker/file_picker.dart';
@@ -16,18 +15,29 @@ const storage = FlutterSecureStorage();
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await Firebase.initializeApp();
-  FirebaseMessaging.onBackgroundMessage(firebaseMessagingBackgroundHandler);
-  await MobileNotifications.initialize();
-  await Workmanager().initialize(backgroundDispatcher);
-  await Workmanager().registerPeriodicTask(
-    'aduanhub-periodic-notifications',
-    backgroundTask,
-    frequency: const Duration(minutes: 15),
-    existingWorkPolicy: ExistingPeriodicWorkPolicy.keep,
-    constraints: Constraints(networkType: NetworkType.connected),
-  );
   runApp(const AduanHubApp());
+  unawaited(_initializeBackgroundServices());
+}
+
+Future<void> _initializeBackgroundServices() async {
+  try {
+    await MobileNotifications.initialize().timeout(const Duration(seconds: 5));
+  } catch (_) {}
+  if (await MobileNotifications.ensureFirebase()) {
+    FirebaseMessaging.onBackgroundMessage(firebaseMessagingBackgroundHandler);
+  }
+  try {
+    await Workmanager().initialize(backgroundDispatcher);
+    await Workmanager().registerPeriodicTask(
+      'aduanhub-periodic-notifications',
+      backgroundTask,
+      frequency: const Duration(minutes: 15),
+      existingWorkPolicy: ExistingPeriodicWorkPolicy.keep,
+      constraints: Constraints(networkType: NetworkType.connected),
+    );
+  } catch (_) {
+    // Foreground polling and FCM continue if Android rejects periodic work.
+  }
 }
 
 class AduanHubApp extends StatefulWidget {
@@ -56,9 +66,11 @@ class _AduanHubAppState extends State<AduanHubApp> {
       try {
         profile = await client.get('/me');
         api = client;
-        await MobileNotifications.bindFirebase(client);
+        unawaited(MobileNotifications.bindFirebase(client));
+      } on ApiException catch (error) {
+        if (error.status == 401) await storage.delete(key: 'token');
       } catch (_) {
-        await storage.delete(key: 'token');
+        // Keep the saved session during temporary network outages.
       }
     }
     if (mounted) setState(() => loading = false);
@@ -72,11 +84,11 @@ class _AduanHubAppState extends State<AduanHubApp> {
     await storage.write(key: 'api_base_url', value: resolvedBase);
     final client = ApiClient(token, resolvedBase);
     final me = await client.get('/me');
-    await MobileNotifications.bindFirebase(client);
     setState(() {
       api = client;
       profile = me;
     });
+    unawaited(MobileNotifications.bindFirebase(client));
   }
 
   Future<void> signOut() async {
