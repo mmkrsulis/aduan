@@ -14,11 +14,12 @@ services:
       WEBHOOK_SECRET: ${WEBHOOK_SECRET:-}
       BOOTSTRAP_PASSWORD: ${BOOTSTRAP_PASSWORD:-ChangeMeBeforeLaunch!}
       COOKIE_SECURE: ${COOKIE_SECURE:-false}
-      FCM_SERVICE_ACCOUNT_JSON: ${FCM_SERVICE_ACCOUNT_JSON:-}
+      FCM_SERVICE_ACCOUNT_FILE: /run/secrets/firebase-service-account.json
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
       - aduan_data:/data
+      - ${FCM_SERVICE_ACCOUNT_FILE_HOST:-/dev/null}:/run/secrets/firebase-service-account.json:ro
     networks:
       - aduan_net
   chat-timeout-worker:
@@ -34,11 +35,12 @@ services:
       MPWA_BASE_URL: ${MPWA_BASE_URL:-http://host.docker.internal:18082}
       MPWA_API_KEY: ${MPWA_API_KEY:-}
       MPWA_SENDER: ${MPWA_SENDER:-}
-      FCM_SERVICE_ACCOUNT_JSON: ${FCM_SERVICE_ACCOUNT_JSON:-}
+      FCM_SERVICE_ACCOUNT_FILE: /run/secrets/firebase-service-account.json
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
       - aduan_data:/data
+      - ${FCM_SERVICE_ACCOUNT_FILE_HOST:-/dev/null}:/run/secrets/firebase-service-account.json:ro
     networks:
       - aduan_net
     depends_on:
@@ -55,9 +57,10 @@ services:
       SECRET_KEY: ${SECRET_KEY:-change-this-in-production}
       DATABASE_PATH: /data/aduan.db
       EMAIL_POLL_SECONDS: ${EMAIL_POLL_SECONDS:-60}
-      FCM_SERVICE_ACCOUNT_JSON: ${FCM_SERVICE_ACCOUNT_JSON:-}
+      FCM_SERVICE_ACCOUNT_FILE: /run/secrets/firebase-service-account.json
     volumes:
       - aduan_data:/data
+      - ${FCM_SERVICE_ACCOUNT_FILE_HOST:-/dev/null}:/run/secrets/firebase-service-account.json:ro
     networks:
       - aduan_net
     depends_on:
