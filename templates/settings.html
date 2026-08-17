@@ -20,6 +20,28 @@
       <div class="integration-row"><div class="webhook-box"><span>{{'URL webhook' if lang=='id' else 'Webhook URL'}}</span><code>{{request.host_url.rstrip('/')}}{{url_for('webhook',slug=org.slug)}}?token=••••••••</code><small>{{'Salin alamat lengkap dari konfigurasi server ke webhook gateway WhatsApp.' if lang=='id' else 'Use the complete server-configured URL as the WhatsApp gateway webhook.'}}</small></div><div class="flow-summary"><div><b>{{'Alur aduan otomatis' if lang=='id' else 'Automated complaint flow'}}</b><p>{{'Atur sapaan, bahasa, pertanyaan, dan konfirmasi tiket.' if lang=='id' else 'Manage greetings, languages, questions, and ticket confirmation.'}}</p></div><a class="secondary" href="{{url_for('flow_settings')}}">{{'Buka pengaturan alur' if lang=='id' else 'Open flow settings'}} →</a></div></div>
       <div class="section-actions"><button class="primary">{{tr('Save settings')}}</button></div>
     </section>{% endif %}
+
+    {% if section=='notifications' %}
+    <section id="notifications" class="settings-section panel notification-settings">
+      <div class="section-heading"><span class="section-icon">N</span><div><span class="eyebrow">{{'NOTIFIKASI ADUAN' if lang=='id' else 'COMPLAINT ALERTS'}}</span><h2>{{'Suara dan notifikasi browser' if lang=='id' else 'Sound and browser notifications'}}</h2><p>{{'Dapatkan peringatan ketika aduan atau pesan baru masuk.' if lang=='id' else 'Get alerted when a new complaint or message arrives.'}}</p></div></div>
+      <div class="notification-settings-grid">
+        <div class="notification-setting-block">
+          <div><h3>{{'Pengaturan organisasi' if lang=='id' else 'Organization settings'}}</h3><p>{{'Berlaku sebagai suara bawaan untuk seluruh pengguna.' if lang=='id' else 'Used as the default alert sound for every user.'}}</p></div>
+          <label class="check-row"><input type="checkbox" name="notification_sound_enabled" value="1" {% if org.notification_sound_enabled %}checked{% endif %}><span><b>{{'Aktifkan peringatan aduan baru' if lang=='id' else 'Enable new complaint alerts'}}</b><small>{{'Diperiksa setiap 12 detik selama aplikasi web terbuka.' if lang=='id' else 'Checks every 12 seconds while the web app is open.'}}</small></span></label>
+          <label>{{'Suara khusus' if lang=='id' else 'Custom sound'}}<input type="file" name="notification_sound" accept="audio/mpeg,audio/ogg"><small>{{'MP3 atau OGG, maksimal 8 MB. Kosongkan untuk memakai bunyi bawaan.' if lang=='id' else 'MP3 or OGG, up to 8 MB. Leave empty for the built-in chime.'}}</small></label>
+          {% if org.notification_sound %}<label class="check-row subtle"><input type="checkbox" name="remove_sound" value="1"><span><b>{{'Hapus suara khusus' if lang=='id' else 'Remove custom sound'}}</b><small>{{'Kembali menggunakan bunyi bawaan.' if lang=='id' else 'Return to the built-in chime.'}}</small></span></label>{% endif %}
+        </div>
+        <div class="notification-setting-block device-alert-settings">
+          <div><h3>{{'Perangkat ini' if lang=='id' else 'This device'}}</h3><p>{{'Pilihan ini hanya disimpan di browser yang sedang digunakan.' if lang=='id' else 'These preferences are saved only in this browser.'}}</p></div>
+          <label class="check-row"><input id="device-sound-enabled" type="checkbox"><span><b>{{'Putar suara' if lang=='id' else 'Play sound'}}</b><small>{{'Dapat dimatikan khusus pada perangkat ini.' if lang=='id' else 'Can be muted only on this device.'}}</small></span></label>
+          <label>{{'Volume' if lang=='id' else 'Volume'}}<div class="volume-row"><input id="notification-volume" type="range" min="0" max="100" step="5"><output id="notification-volume-value">70%</output></div></label>
+          <div class="device-alert-actions"><button type="button" class="secondary" id="enable-browser-alerts">{{'Izinkan notifikasi browser' if lang=='id' else 'Allow browser notifications'}}</button><button type="button" class="secondary" id="test-notification-sound">▶ {{'Uji suara' if lang=='id' else 'Test sound'}}</button></div>
+          <small id="browser-alert-status" class="browser-alert-status"></small>
+        </div>
+      </div>
+      <div class="section-actions"><button class="primary">{{'Simpan pengaturan notifikasi' if lang=='id' else 'Save notification settings'}}</button></div>
+    </section>
+    {% endif %}
   </form>
 
   {% if section=='units' %}<section id="units" class="settings-section panel">

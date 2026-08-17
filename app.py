@@ -76,7 +76,7 @@ def csrf_protect():
 
 SCHEMA = """
 PRAGMA foreign_keys=ON;
-CREATE TABLE IF NOT EXISTS organizations(id INTEGER PRIMARY KEY, name TEXT NOT NULL, app_name TEXT DEFAULT 'AduanHub', slug TEXT UNIQUE, logo TEXT, icon TEXT, accent TEXT DEFAULT '#2563eb', terminology TEXT DEFAULT 'Complaint', timezone TEXT DEFAULT 'Asia/Jakarta', ticket_prefix TEXT DEFAULT 'ADU', ticket_format TEXT DEFAULT '{prefix}-{year}-{number:05d}', mpwa_url TEXT, mpwa_key TEXT, mpwa_sender TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE IF NOT EXISTS organizations(id INTEGER PRIMARY KEY, name TEXT NOT NULL, app_name TEXT DEFAULT 'AduanHub', slug TEXT UNIQUE, logo TEXT, icon TEXT, accent TEXT DEFAULT '#2563eb', terminology TEXT DEFAULT 'Complaint', timezone TEXT DEFAULT 'Asia/Jakarta', ticket_prefix TEXT DEFAULT 'ADU', ticket_format TEXT DEFAULT '{prefix}-{year}-{number:05d}', notification_sound TEXT, notification_sound_enabled INTEGER DEFAULT 1, mpwa_url TEXT, mpwa_key TEXT, mpwa_sender TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY, org_id INTEGER NOT NULL, name TEXT NOT NULL, email TEXT UNIQUE NOT NULL, password TEXT NOT NULL, role TEXT NOT NULL CHECK(role IN ('owner','admin','supervisor','agent','viewer')), unit TEXT, active INTEGER DEFAULT 1, last_login TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(org_id) REFERENCES organizations(id));
 CREATE TABLE IF NOT EXISTS contacts(id INTEGER PRIMARY KEY, org_id INTEGER NOT NULL, name TEXT, phone TEXT NOT NULL, location TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, UNIQUE(org_id,phone), FOREIGN KEY(org_id) REFERENCES organizations(id));
 CREATE TABLE IF NOT EXISTS tickets(id INTEGER PRIMARY KEY, org_id INTEGER NOT NULL, contact_id INTEGER NOT NULL, code TEXT UNIQUE, subject TEXT NOT NULL, category TEXT DEFAULT 'General', priority TEXT DEFAULT 'normal', status TEXT DEFAULT 'new', unit TEXT, assignee_id INTEGER, sla_due TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, updated_at TEXT DEFAULT CURRENT_TIMESTAMP, closed_at TEXT, FOREIGN KEY(org_id) REFERENCES organizations(id), FOREIGN KEY(contact_id) REFERENCES contacts(id), FOREIGN KEY(assignee_id) REFERENCES users(id));
@@ -110,7 +110,7 @@ def init_db():
     os.makedirs(os.path.dirname(DB), exist_ok=True); os.makedirs(UPLOAD_DIR, exist_ok=True)
     con=sqlite3.connect(DB, timeout=30); con.executescript(SCHEMA)
     migrations={
-      "organizations":{"app_name":"TEXT DEFAULT 'AduanHub'","icon":"TEXT","timezone":"TEXT DEFAULT 'Asia/Jakarta'","ticket_prefix":"TEXT DEFAULT 'ADU'","ticket_format":"TEXT DEFAULT '{prefix}-{year}-{number:05d}'"},
+      "organizations":{"app_name":"TEXT DEFAULT 'AduanHub'","icon":"TEXT","timezone":"TEXT DEFAULT 'Asia/Jakarta'","ticket_prefix":"TEXT DEFAULT 'ADU'","ticket_format":"TEXT DEFAULT '{prefix}-{year}-{number:05d}'","notification_sound":"TEXT","notification_sound_enabled":"INTEGER DEFAULT 1"},
       "messages":{"attachment_path":"TEXT","attachment_name":"TEXT","attachment_type":"TEXT","delivery_status":"TEXT DEFAULT 'received'"},
       "flow_configs":{"forward_template_id":"TEXT","forward_template_en":"TEXT","status_template_id":"TEXT","status_template_en":"TEXT","unavailable_id":"TEXT","unavailable_en":"TEXT","identity_prompt_id":"TEXT","identity_prompt_en":"TEXT","chat_waiting_id":"TEXT","chat_waiting_en":"TEXT","chat_connected_id":"TEXT","chat_connected_en":"TEXT","chat_timeout_id":"TEXT","chat_timeout_en":"TEXT","menu_items":"TEXT DEFAULT '[]'","ai_enabled":"INTEGER DEFAULT 0","ai_prompt":"TEXT","ai_confidence":"REAL DEFAULT .8","session_timeout_minutes":"INTEGER DEFAULT 30"}
     }
@@ -235,7 +235,7 @@ def ctx():
         if is_central_admin(): unread=db().execute("SELECT count(*) FROM notifications WHERE org_id=? AND read_at IS NULL AND (user_id IS NULL OR user_id=?)",(session["org_id"],session.get("uid"))).fetchone()[0]
         else: unread=db().execute("SELECT count(*) FROM notifications WHERE org_id=? AND user_id=? AND read_at IS NULL",(session["org_id"],session.get("uid"))).fetchone()[0]
     brand=None
-    if session.get("org_id"): brand=db().execute("SELECT name,app_name,logo,icon,accent,terminology,timezone FROM organizations WHERE id=?",(session["org_id"],)).fetchone()
+    if session.get("org_id"): brand=db().execute("SELECT name,app_name,logo,icon,accent,terminology,timezone,notification_sound,notification_sound_enabled FROM organizations WHERE id=?",(session["org_id"],)).fetchone()
     def localdt(value):
         if not value: return "-"
         try:
@@ -509,12 +509,19 @@ def delete_user(uid):
 @roles("owner","admin")
 def settings():
     section=request.args.get("section","general")
-    if section not in ("general","whatsapp","units","categories"): section="general"
+    if section not in ("general","whatsapp","notifications","units","categories"): section="general"
     if request.method=="POST":
         section=request.form.get("section","general")
         org=db().execute("SELECT * FROM organizations WHERE id=?",(session["org_id"],)).fetchone(); logo=org["logo"]; icon=org["icon"]
         if section=="whatsapp":
             db().execute("UPDATE organizations SET mpwa_url=?,mpwa_key=?,mpwa_sender=? WHERE id=?",(request.form.get("mpwa_url","").strip(),request.form.get("mpwa_key","").strip(),request.form.get("mpwa_sender","").strip(),session["org_id"])); db().commit(); audit("organization.mpwa_updated","organization",session["org_id"]); flash("Koneksi WhatsApp berhasil disimpan.","success"); return redirect(url_for("settings",section="whatsapp"))
+        if section=="notifications":
+            sound=org["notification_sound"]
+            try:
+                if request.form.get("remove_sound")=="1": sound=None
+                if request.files.get("notification_sound") and request.files["notification_sound"].filename: sound=store_upload(file=request.files["notification_sound"])[0]
+            except ValueError as e: flash(str(e),"error"); return redirect(url_for("settings",section="notifications"))
+            db().execute("UPDATE organizations SET notification_sound=?,notification_sound_enabled=? WHERE id=?",(sound,1 if request.form.get("notification_sound_enabled") else 0,session["org_id"])); db().commit(); audit("organization.notification_updated","organization",session["org_id"]); flash("Pengaturan notifikasi berhasil disimpan.","success"); return redirect(url_for("settings",section="notifications"))
         try:
             if request.files.get("logo") and request.files["logo"].filename: logo=store_upload(file=request.files["logo"])[0]
             if request.files.get("icon") and request.files["icon"].filename: icon=store_upload(file=request.files["icon"])[0]
@@ -613,6 +620,17 @@ def notifications():
     rows=db().execute(f"SELECT n.*,t.code FROM notifications n LEFT JOIN tickets t ON t.id=n.ticket_id WHERE n.org_id=? AND {condition} ORDER BY n.created_at DESC LIMIT 100",(session["org_id"],session["uid"])).fetchall()
     db().execute(f"UPDATE notifications AS n SET read_at=CURRENT_TIMESTAMP WHERE n.org_id=? AND n.read_at IS NULL AND {condition}",(session["org_id"],session["uid"])); db().commit()
     return render_template("notifications.html",notifications=rows)
+
+@app.get("/notifications/poll")
+@login_required
+def notifications_poll():
+    after=max(0,request.args.get("after",type=int) or 0); condition="(n.user_id IS NULL OR n.user_id=?)" if is_central_admin() else "n.user_id=?"
+    rows=db().execute(f"SELECT n.id,n.ticket_id,n.title,n.body,t.code FROM notifications n LEFT JOIN tickets t ON t.id=n.ticket_id WHERE n.org_id=? AND {condition} AND n.id>? ORDER BY n.id",(session["org_id"],session["uid"],after)).fetchall()
+    latest=db().execute(f"SELECT COALESCE(max(n.id),0) FROM notifications n WHERE n.org_id=? AND {condition}",(session["org_id"],session["uid"])).fetchone()[0]
+    unread=db().execute(f"SELECT count(*) FROM notifications n WHERE n.org_id=? AND {condition} AND n.read_at IS NULL",(session["org_id"],session["uid"])).fetchone()[0]
+    org=db().execute("SELECT notification_sound,notification_sound_enabled FROM organizations WHERE id=?",(session["org_id"],)).fetchone()
+    sound_url=url_for("media_file",filename=org["notification_sound"]) if org and org["notification_sound"] else None
+    return jsonify(latest=latest,unread=unread,user_key=f"{session['org_id']}-{session['uid']}",sound_enabled=bool(org and org["notification_sound_enabled"]),sound_url=sound_url,notifications=[dict(row) for row in rows])
 
 @app.get("/documentation")
 @login_required

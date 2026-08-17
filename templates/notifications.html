@@ -1,2 +1,23 @@
-{% extends 'base.html' %}{% block title %}Notifications · AduanHub{% endblock %}{% block heading %}Notifications{% endblock %}{% block subheading %}New complaints, assignments, and service activity{% endblock %}
-{% block content %}<div class="panel"><div class="user-list">{% for n in notifications %}<a class="notification-row {% if not n.read_at %}unread{% endif %}" href="{{url_for('ticket',tid=n.ticket_id) if n.ticket_id else '#'}}"><div class="avatar">!</div><div><b>{{n.title}}</b><span>{{n.body}}</span><small>{{n.created_at}}{% if n.code %} · {{n.code}}{% endif %}</small></div></a>{% else %}<div class="empty">No notifications.</div>{% endfor %}</div></div>{% endblock %}
+{% extends 'base.html' %}
+{% block title %}{{'Notifikasi' if lang=='id' else 'Notifications'}} · {{brand.app_name or 'AduanHub'}}{% endblock %}
+{% block heading %}{{'Notifikasi' if lang=='id' else 'Notifications'}}{% endblock %}
+{% block subheading %}{{'Aduan baru, disposisi, dan aktivitas layanan' if lang=='id' else 'New complaints, assignments, and service activity'}}{% endblock %}
+{% block content %}
+<div class="notification-page-grid">
+  <div class="panel">
+    <div class="panel-head"><div><h3>{{'Aktivitas terbaru' if lang=='id' else 'Latest activity'}}</h3><p>{{'Notifikasi otomatis ditandai sudah dibaca saat halaman ini dibuka.' if lang=='id' else 'Notifications are marked as read when this page is opened.'}}</p></div></div>
+    <div class="user-list">{% for n in notifications %}<a class="notification-row {% if not n.read_at %}unread{% endif %}" href="{{url_for('ticket',tid=n.ticket_id) if n.ticket_id else '#'}}"><div class="avatar">!</div><div><b>{{n.title}}</b><span>{{n.body}}</span><small>{{localdt(n.created_at)}}{% if n.code %} · {{n.code}}{% endif %}</small></div></a>{% else %}<div class="empty">{{'Belum ada notifikasi.' if lang=='id' else 'No notifications yet.'}}</div>{% endfor %}</div>
+  </div>
+  <div class="panel notification-device-panel">
+    <div class="panel-head"><div><h3>{{'Peringatan perangkat' if lang=='id' else 'Device alerts'}}</h3><p>{{'Disimpan hanya pada browser ini.' if lang=='id' else 'Saved only in this browser.'}}</p></div></div>
+    <div class="notification-device-body">
+      <label class="check-row"><input id="device-sound-enabled" type="checkbox"><span><b>{{'Putar suara' if lang=='id' else 'Play sound'}}</b><small>{{'Bunyikan setiap ada aktivitas baru.' if lang=='id' else 'Sound an alert for new activity.'}}</small></span></label>
+      <label>{{'Volume' if lang=='id' else 'Volume'}}<div class="volume-row"><input id="notification-volume" type="range" min="0" max="100" step="5"><output id="notification-volume-value">70%</output></div></label>
+      <button type="button" class="secondary wide" id="enable-browser-alerts">{{'Izinkan notifikasi browser' if lang=='id' else 'Allow browser notifications'}}</button>
+      <button type="button" class="secondary wide" id="test-notification-sound">▶ {{'Uji suara' if lang=='id' else 'Test sound'}}</button>
+      <small id="browser-alert-status" class="browser-alert-status"></small>
+      {% if me.role in ['owner','admin'] %}<a class="text-link" href="{{url_for('settings',section='notifications')}}">{{'Atur suara khusus organisasi' if lang=='id' else 'Configure organization sound'}} →</a>{% endif %}
+    </div>
+  </div>
+</div>
+{% endblock %}

@@ -3,3 +3,48 @@ document.querySelectorAll('[data-icon]').forEach(e=>{e.innerHTML=`<svg viewBox="
 const preferred=()=>localStorage.theme||(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light');
 const applyTheme=()=>{const dark=preferred()==='dark',id=document.documentElement.lang==='id';document.body.classList.toggle('dark',dark);document.documentElement.classList.toggle('dark',dark);document.documentElement.style.colorScheme=dark?'dark':'light';const label=document.querySelector('#theme-label');if(label)label.textContent=id?(dark?'Gelap':'Terang'):(dark?'Dark':'Light');document.querySelector('#theme')?.setAttribute('aria-pressed',String(dark))};
 applyTheme();document.querySelector('#theme')?.addEventListener('click',()=>{localStorage.theme=preferred()==='dark'?'light':'dark';applyTheme()});document.querySelector('#menu')?.addEventListener('click',()=>document.querySelector('#side').classList.toggle('open'));
+
+const notificationButton=document.querySelector('.notification-button');
+if(notificationButton){
+  let notificationState={last:0,key:'',soundEnabled:true,soundUrl:null,ready:false};
+  const deviceSoundEnabled=()=>localStorage.getItem('aduanSoundEnabled')!=='false';
+  const deviceVolume=()=>Math.max(0,Math.min(1,Number(localStorage.getItem('aduanSoundVolume')||70)/100));
+  const playAlert=async()=>{
+    if(!notificationState.soundEnabled||!deviceSoundEnabled())return;
+    try{
+      if(notificationState.soundUrl){const audio=new Audio(notificationState.soundUrl);audio.volume=deviceVolume();await audio.play();return}
+      const Context=window.AudioContext||window.webkitAudioContext;if(!Context)return;
+      const context=new Context();await context.resume();const gain=context.createGain();const oscillator=context.createOscillator();
+      oscillator.type='sine';oscillator.frequency.setValueAtTime(740,context.currentTime);oscillator.frequency.exponentialRampToValueAtTime(980,context.currentTime+.18);gain.gain.setValueAtTime(.0001,context.currentTime);gain.gain.exponentialRampToValueAtTime(Math.max(.0001,.24*deviceVolume()),context.currentTime+.025);gain.gain.exponentialRampToValueAtTime(.0001,context.currentTime+.42);oscillator.connect(gain).connect(context.destination);oscillator.start();oscillator.stop(context.currentTime+.43);oscillator.onended=()=>context.close();
+    }catch(_){/* Browser audio requires a prior user interaction. */}
+  };
+  const showBrowserAlert=item=>{
+    if(!notificationState.soundEnabled||!('Notification'in window)||Notification.permission!=='granted')return;
+    const alert=new Notification(item.title,{body:item.body||item.code||'',tag:`aduan-${item.id}`});
+    alert.onclick=()=>{window.focus();if(item.ticket_id)location.href=`/tickets/${item.ticket_id}`;alert.close()};
+  };
+  const updateBadge=count=>{
+    let badge=notificationButton.querySelector('b');
+    if(count&&!badge){badge=document.createElement('b');notificationButton.appendChild(badge)}
+    if(badge){badge.textContent=count>99?'99+':String(count);badge.hidden=!count}
+  };
+  const pollNotifications=async()=>{
+    try{
+      const response=await fetch(`/notifications/poll?after=${notificationState.ready?notificationState.last:0}`,{headers:{Accept:'application/json'}});if(!response.ok)return;
+      const data=await response.json();notificationState.soundEnabled=data.sound_enabled;notificationState.soundUrl=data.sound_url;
+      if(!notificationState.ready){notificationState.key=`aduanNotificationLastId:${data.user_key}`;const saved=localStorage.getItem(notificationState.key);notificationState.last=saved===null?data.latest:Number(saved);notificationState.ready=true;if(saved===null)localStorage.setItem(notificationState.key,String(data.latest));updateBadge(data.unread);syncNotificationSettings();return}
+      const fresh=(data.notifications||[]).filter(item=>item.id>notificationState.last);if(fresh.length){notificationState.last=Math.max(...fresh.map(item=>item.id));localStorage.setItem(notificationState.key,String(notificationState.last));await playAlert();fresh.slice(-3).forEach(showBrowserAlert)}
+      notificationState.last=Math.max(notificationState.last,data.latest||0);localStorage.setItem(notificationState.key,String(notificationState.last));updateBadge(data.unread);
+    }catch(_){/* The next poll retries automatically. */}
+  };
+  const syncNotificationSettings=()=>{
+    const enabled=document.querySelector('#device-sound-enabled'),volume=document.querySelector('#notification-volume'),value=document.querySelector('#notification-volume-value'),status=document.querySelector('#browser-alert-status');
+    if(enabled)enabled.checked=deviceSoundEnabled();if(volume)volume.value=String(Math.round(deviceVolume()*100));if(value)value.textContent=`${Math.round(deviceVolume()*100)}%`;
+    if(status&&'Notification'in window)status.textContent=document.documentElement.lang==='id'?`Status notifikasi browser: ${Notification.permission}`:`Browser notification status: ${Notification.permission}`;
+  };
+  document.querySelector('#device-sound-enabled')?.addEventListener('change',event=>localStorage.setItem('aduanSoundEnabled',String(event.target.checked)));
+  document.querySelector('#notification-volume')?.addEventListener('input',event=>{localStorage.setItem('aduanSoundVolume',event.target.value);const value=document.querySelector('#notification-volume-value');if(value)value.textContent=`${event.target.value}%`});
+  document.querySelector('#test-notification-sound')?.addEventListener('click',playAlert);
+  document.querySelector('#enable-browser-alerts')?.addEventListener('click',async()=>{if('Notification'in window)await Notification.requestPermission();syncNotificationSettings()});
+  pollNotifications();setInterval(pollNotifications,12000);
+}
