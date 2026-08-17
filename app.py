@@ -898,7 +898,7 @@ def api_can_access(user,ticket_row):
     return not (user["role"]=="agent" and ticket_row["assignee_id"] and ticket_row["assignee_id"]!=user["id"])
 
 def api_ticket_dict(row):
-    return {key:row[key] for key in ("id","code","subject","category","priority","status","unit","assignee_id","created_at","updated_at","closed_at")} | {"contact":{"name":row["contact"],"phone":row["phone"],"location":row["location"] or "-"},"assignee":row["assignee"] if "assignee" in row.keys() else None}
+    return {key:row[key] for key in ("id","code","subject","category","priority","status","unit","assignee_id","created_at","updated_at","closed_at","channel")} | {"contact":{"name":row["contact"],"phone":row["phone"],"email":row["email"] if "email" in row.keys() else None,"location":row["location"] or "-"},"assignee":row["assignee"] if "assignee" in row.keys() else None}
 
 @app.post("/api/v1/auth/login")
 def api_login():
@@ -950,13 +950,13 @@ def api_tickets():
     status=request.args.get("status","").strip(); query=request.args.get("q","").strip()
     if status: where.append("t.status=?"); params.append(status)
     if query: where.append("(t.code LIKE ? OR t.subject LIKE ? OR c.name LIKE ?)"); params.extend([f"%{query}%"]*3)
-    rows=db().execute("SELECT t.*,c.name contact,c.phone,c.location,u.name assignee FROM tickets t JOIN contacts c ON c.id=t.contact_id LEFT JOIN users u ON u.id=t.assignee_id WHERE "+" AND ".join(where)+" ORDER BY t.updated_at DESC LIMIT 200",params).fetchall()
+    rows=db().execute("SELECT t.*,c.name contact,c.phone,c.email,c.location,u.name assignee FROM tickets t JOIN contacts c ON c.id=t.contact_id LEFT JOIN users u ON u.id=t.assignee_id WHERE "+" AND ".join(where)+" ORDER BY t.updated_at DESC LIMIT 200",params).fetchall()
     return jsonify(tickets=[api_ticket_dict(row) for row in rows])
 
 @app.get("/api/v1/tickets/<int:tid>")
 @api_auth
 def api_ticket_detail(tid):
-    u=g.api_user; t=db().execute("SELECT t.*,c.name contact,c.phone,c.location,u.name assignee FROM tickets t JOIN contacts c ON c.id=t.contact_id LEFT JOIN users u ON u.id=t.assignee_id WHERE t.id=? AND t.org_id=?",(tid,u["org_id"])).fetchone()
+    u=g.api_user; t=db().execute("SELECT t.*,c.name contact,c.phone,c.email,c.location,u.name assignee FROM tickets t JOIN contacts c ON c.id=t.contact_id LEFT JOIN users u ON u.id=t.assignee_id WHERE t.id=? AND t.org_id=?",(tid,u["org_id"])).fetchone()
     if not t: return jsonify(error="not_found"),404
     if not api_can_access(u,t): return jsonify(error="forbidden"),403
     messages=db().execute("SELECT * FROM messages WHERE ticket_id=? ORDER BY id",(tid,)).fetchall()
@@ -988,7 +988,7 @@ def api_ticket_assign(tid):
 @app.post("/api/v1/tickets/<int:tid>/reply")
 @api_auth
 def api_ticket_reply(tid):
-    u=g.api_user; t=db().execute("SELECT t.*,c.phone FROM tickets t JOIN contacts c ON c.id=t.contact_id WHERE t.id=? AND t.org_id=?",(tid,u["org_id"])).fetchone()
+    u=g.api_user; t=db().execute("SELECT t.*,c.phone,c.email FROM tickets t JOIN contacts c ON c.id=t.contact_id WHERE t.id=? AND t.org_id=?",(tid,u["org_id"])).fetchone()
     if not t: return jsonify(error="not_found"),404
     if not api_can_access(u,t) or u["role"] not in ("owner","admin","supervisor","agent") or t["status"] in ("resolved","closed") or (u["role"] not in ("owner","admin") and not t["unit"]): return jsonify(error="forbidden"),403
     payload=request.get_json(silent=True) or {}; body=(request.form.get("body") if request.form else payload.get("body") or "").strip(); upload=request.files.get("attachment"); stored=None
@@ -997,10 +997,13 @@ def api_ticket_reply(tid):
         except ValueError as exc: return jsonify(error="invalid_attachment",message=str(exc)),400
     if not body and not stored: return jsonify(error="empty_message"),400
     org=db().execute("SELECT * FROM organizations WHERE id=?",(u["org_id"],)).fetchone()
-    if stored: ok,message=send_mpwa_media_for_org(org,t["phone"],request.url_root.rstrip("/")+url_for("media_file",filename=stored[0]),stored[2],body)
+    if t["channel"]=="email": ok,message=send_ticket_email(t,body,stored)
+    elif stored: ok,message=send_mpwa_media_for_org(org,t["phone"],request.url_root.rstrip("/")+url_for("media_file",filename=stored[0]),stored[2],body)
     else: ok,message=send_mpwa_for_org(org,t["phone"],body)
     if not ok: return jsonify(error="delivery_failed",message=message),502
-    db().execute("INSERT INTO messages(ticket_id,direction,body,sender,attachment_path,attachment_name,attachment_type,delivery_status) VALUES(?,?,?,?,?,?,?,'sent')",(tid,"out",body,u["name"],*(stored or (None,None,None)))); db().execute("UPDATE tickets SET updated_at=CURRENT_TIMESTAMP WHERE id=?",(tid,)); db().execute("INSERT INTO conversation_states(org_id,phone,step,language,data,human_takeover) VALUES(?,?,?,?,?,1) ON CONFLICT(org_id,phone) DO UPDATE SET step='human_chat',human_takeover=1,updated_at=CURRENT_TIMESTAMP",(u["org_id"],t["phone"],"human_chat","id",json.dumps({"ticket_id":tid}))); db().execute("INSERT INTO audit_logs(org_id,user_id,action,entity,entity_id,metadata) VALUES(?,?,?,?,?,?)",(u["org_id"],u["id"],"reply.sent","ticket",tid,"{}")); db().commit()
+    db().execute("INSERT INTO messages(ticket_id,direction,body,sender,attachment_path,attachment_name,attachment_type,delivery_status,channel) VALUES(?,?,?,?,?,?,?,'sent',?)",(tid,"out",body,u["name"],*(stored or (None,None,None)),t["channel"] or "whatsapp")); db().execute("UPDATE tickets SET updated_at=CURRENT_TIMESTAMP WHERE id=?",(tid,))
+    if t["channel"]!="email": db().execute("INSERT INTO conversation_states(org_id,phone,step,language,data,human_takeover) VALUES(?,?,?,?,?,1) ON CONFLICT(org_id,phone) DO UPDATE SET step='human_chat',human_takeover=1,updated_at=CURRENT_TIMESTAMP",(u["org_id"],t["phone"],"human_chat","id",json.dumps({"ticket_id":tid})))
+    db().execute("INSERT INTO audit_logs(org_id,user_id,action,entity,entity_id,metadata) VALUES(?,?,?,?,?,?)",(u["org_id"],u["id"],"reply.sent","ticket",tid,json.dumps({"channel":t["channel"]}))); db().commit()
     return jsonify(status="sent")
 
 @app.post("/api/v1/tickets/<int:tid>/status")

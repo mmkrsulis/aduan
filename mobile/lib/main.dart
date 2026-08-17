@@ -5,11 +5,26 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:intl/intl.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:workmanager/workmanager.dart';
 import 'api.dart';
+import 'notification_service.dart';
 
 const storage = FlutterSecureStorage();
 
-void main() => runApp(const AduanHubApp());
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await MobileNotifications.initialize();
+  await Workmanager().initialize(backgroundDispatcher);
+  await Workmanager().registerPeriodicTask(
+    'aduanhub-periodic-notifications',
+    backgroundTask,
+    frequency: const Duration(minutes: 15),
+    existingWorkPolicy: ExistingPeriodicWorkPolicy.keep,
+    constraints: Constraints(networkType: NetworkType.connected),
+  );
+  runApp(const AduanHubApp());
+}
 
 class AduanHubApp extends StatefulWidget {
   const AduanHubApp({super.key});
@@ -408,7 +423,54 @@ class HomeShell extends StatefulWidget {
 
 class _HomeShellState extends State<HomeShell> {
   int index = 0;
+  int unread = 0;
+  Timer? notificationTimer;
+  StreamSubscription<int>? notificationTapSubscription;
   final ticketKey = GlobalKey<TicketListScreenState>();
+  @override
+  void initState() {
+    super.initState();
+    unread = (widget.profile['unread'] as num?)?.toInt() ?? 0;
+    checkNotifications();
+    notificationTimer = Timer.periodic(
+      const Duration(seconds: 20),
+      (_) => checkNotifications(),
+    );
+    notificationTapSubscription = MobileNotifications.ticketClicks.stream
+        .listen(openNotificationTicket);
+    final pending = MobileNotifications.pendingTicketId;
+    if (pending != null) {
+      MobileNotifications.pendingTicketId = null;
+      WidgetsBinding.instance.addPostFrameCallback(
+        (_) => openNotificationTicket(pending),
+      );
+    }
+  }
+
+  void openNotificationTicket(int ticketId) {
+    if (!mounted) return;
+    MobileNotifications.pendingTicketId = null;
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => TicketDetailScreen(api: widget.api, ticketId: ticketId),
+      ),
+    );
+  }
+
+  Future<void> checkNotifications() async {
+    try {
+      final count = await MobileNotifications.poll(widget.api);
+      if (mounted) setState(() => unread = count);
+    } catch (_) {}
+  }
+
+  @override
+  void dispose() {
+    notificationTimer?.cancel();
+    notificationTapSubscription?.cancel();
+    super.dispose();
+  }
+
   @override
   Widget build(BuildContext context) {
     final pages = [
@@ -429,26 +491,33 @@ class _HomeShellState extends State<HomeShell> {
       bottomNavigationBar: NavigationBar(
         selectedIndex: index,
         onDestinationSelected: (value) {
-          setState(() => index = value);
+          setState(() {
+            index = value;
+            if (value == 2) unread = 0;
+          });
           if (value == 1) ticketKey.currentState?.reload();
         },
-        destinations: const [
-          NavigationDestination(
+        destinations: [
+          const NavigationDestination(
             icon: Icon(Icons.space_dashboard_outlined),
             selectedIcon: Icon(Icons.space_dashboard),
             label: 'Ringkasan',
           ),
-          NavigationDestination(
+          const NavigationDestination(
             icon: Icon(Icons.inbox_outlined),
             selectedIcon: Icon(Icons.inbox),
             label: 'Aduan',
           ),
           NavigationDestination(
-            icon: Icon(Icons.notifications_none),
-            selectedIcon: Icon(Icons.notifications),
+            icon: Badge(
+              isLabelVisible: unread > 0,
+              label: Text(unread > 99 ? '99+' : '$unread'),
+              child: const Icon(Icons.notifications_none),
+            ),
+            selectedIcon: const Icon(Icons.notifications),
             label: 'Notifikasi',
           ),
-          NavigationDestination(
+          const NavigationDestination(
             icon: Icon(Icons.person_outline),
             selectedIcon: Icon(Icons.person),
             label: 'Profil',
@@ -766,7 +835,12 @@ class TicketCard extends StatelessWidget {
             const SizedBox(height: 12),
             Row(
               children: [
-                const Icon(Icons.person_outline, size: 16),
+                Icon(
+                  ticket['channel'] == 'email'
+                      ? Icons.email_outlined
+                      : Icons.chat_outlined,
+                  size: 16,
+                ),
                 const SizedBox(width: 6),
                 Expanded(
                   child: Text(
@@ -1056,7 +1130,7 @@ class _TicketDetailScreenState extends State<TicketDetailScreen> {
                     ),
                     const SizedBox(height: 3),
                     Text(
-                      '${data!['ticket']['unit'] ?? '-'} · ${data!['ticket']['status'].replaceAll('_', ' ')}',
+                      '${data!['ticket']['channel'] == 'email' ? 'Email' : 'WhatsApp'} · ${data!['ticket']['unit'] ?? '-'} · ${data!['ticket']['status'].replaceAll('_', ' ')}',
                       style: Theme.of(context).textTheme.bodySmall,
                     ),
                   ],
@@ -1422,6 +1496,23 @@ class ProfileScreen extends StatelessWidget {
                       borderRadius: BorderRadius.circular(12),
                     ),
                     tileColor: Theme.of(context).colorScheme.surface,
+                    leading: const Icon(Icons.notifications_outlined),
+                    title: const Text('Pengaturan notifikasi'),
+                    subtitle: const Text('Suara, getar, dan alert background'),
+                    trailing: const Icon(Icons.chevron_right),
+                    onTap: () => Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => const NotificationPreferencesScreen(),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  ListTile(
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    tileColor: Theme.of(context).colorScheme.surface,
                     leading: Icon(
                       Icons.logout,
                       color: Theme.of(context).colorScheme.error,
@@ -1442,6 +1533,118 @@ class ProfileScreen extends StatelessWidget {
       ),
     );
   }
+}
+
+class NotificationPreferencesScreen extends StatefulWidget {
+  const NotificationPreferencesScreen({super.key});
+  @override
+  State<NotificationPreferencesScreen> createState() =>
+      _NotificationPreferencesScreenState();
+}
+
+class _NotificationPreferencesScreenState
+    extends State<NotificationPreferencesScreen> {
+  bool enabled = true, sound = true, vibration = true, loading = true;
+  @override
+  void initState() {
+    super.initState();
+    load();
+  }
+
+  Future<void> load() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (!mounted) return;
+    setState(() {
+      enabled = prefs.getBool('notifications_enabled') ?? true;
+      sound = prefs.getBool('notification_sound') ?? true;
+      vibration = prefs.getBool('notification_vibration') ?? true;
+      loading = false;
+    });
+  }
+
+  Future<void> save(String key, bool value) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(key, value);
+  }
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    appBar: AppBar(title: const Text('Pengaturan notifikasi')),
+    body: loading
+        ? const Center(child: CircularProgressIndicator())
+        : ListView(
+            padding: const EdgeInsets.all(20),
+            children: [
+              Card(
+                child: Column(
+                  children: [
+                    SwitchListTile(
+                      title: const Text('Aktifkan notifikasi'),
+                      subtitle: const Text(
+                        'Tampilkan alert untuk aduan dan pesan baru.',
+                      ),
+                      value: enabled,
+                      onChanged: (value) {
+                        setState(() => enabled = value);
+                        save('notifications_enabled', value);
+                      },
+                    ),
+                    const Divider(height: 1),
+                    SwitchListTile(
+                      title: const Text('Suara'),
+                      subtitle: const Text('Gunakan suara notifikasi Android.'),
+                      value: sound,
+                      onChanged: enabled
+                          ? (value) {
+                              setState(() => sound = value);
+                              save('notification_sound', value);
+                            }
+                          : null,
+                    ),
+                    const Divider(height: 1),
+                    SwitchListTile(
+                      title: const Text('Getar'),
+                      subtitle: const Text(
+                        'Getarkan perangkat saat alert masuk.',
+                      ),
+                      value: vibration,
+                      onChanged: enabled
+                          ? (value) {
+                              setState(() => vibration = value);
+                              save('notification_vibration', value);
+                            }
+                          : null,
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 16),
+              SizedBox(
+                height: 50,
+                child: OutlinedButton.icon(
+                  onPressed: enabled
+                      ? () => MobileNotifications.show(
+                          id: 999999,
+                          title: 'Uji notifikasi',
+                          body: 'Notifikasi AduanHub aktif pada perangkat ini.',
+                          sound: sound,
+                          vibration: vibration,
+                        )
+                      : null,
+                  icon: const Icon(Icons.notifications_active_outlined),
+                  label: const Text('Uji notifikasi'),
+                ),
+              ),
+              const Padding(
+                padding: EdgeInsets.only(top: 18),
+                child: Text(
+                  'Saat aplikasi terbuka, pembaruan diperiksa setiap 20 detik. Saat berjalan di background, Android menjadwalkan pemeriksaan berkala sekitar 15 menit.',
+                  style: TextStyle(height: 1.5),
+                ),
+              ),
+            ],
+          ),
+  );
 }
 
 class InfoRow extends StatelessWidget {
