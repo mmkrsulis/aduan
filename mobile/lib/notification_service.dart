@@ -1,4 +1,6 @@
 import 'dart:async';
+import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
@@ -13,6 +15,9 @@ class MobileNotifications {
   static final plugin = FlutterLocalNotificationsPlugin();
   static final ticketClicks = StreamController<int>.broadcast();
   static int? pendingTicketId;
+  static ApiClient? _pushApi;
+  static StreamSubscription<String>? _tokenSubscription;
+  static bool _listenersReady = false;
 
   static void _handleTap(NotificationResponse response) {
     final ticketId = int.tryParse(response.payload ?? '');
@@ -38,6 +43,82 @@ class MobileNotifications {
           AndroidFlutterLocalNotificationsPlugin
         >();
     await android?.requestNotificationsPermission();
+  }
+
+  static Future<void> bindFirebase(ApiClient api) async {
+    _pushApi = api;
+    await FirebaseMessaging.instance.requestPermission(
+      alert: true,
+      badge: true,
+      sound: true,
+    );
+    await _registerToken(await FirebaseMessaging.instance.getToken());
+    await _tokenSubscription?.cancel();
+    _tokenSubscription = FirebaseMessaging.instance.onTokenRefresh.listen(
+      (token) => _registerToken(token),
+    );
+    if (!_listenersReady) {
+      _listenersReady = true;
+      FirebaseMessaging.onMessage.listen(showRemoteMessage);
+      FirebaseMessaging.onMessageOpenedApp.listen(openRemoteMessage);
+      final initial = await FirebaseMessaging.instance.getInitialMessage();
+      if (initial != null) openRemoteMessage(initial);
+    }
+  }
+
+  static Future<void> unbindFirebase() async {
+    final token = await FirebaseMessaging.instance.getToken();
+    final api = _pushApi;
+    if (token != null && api != null) {
+      try {
+        await api.post('/devices/push-token/remove', {'token': token});
+      } catch (_) {}
+    }
+    _pushApi = null;
+    await _tokenSubscription?.cancel();
+    _tokenSubscription = null;
+  }
+
+  static Future<void> _registerToken(String? token) async {
+    final api = _pushApi;
+    if (token == null || api == null) return;
+    try {
+      await api.post('/devices/push-token', {
+        'token': token,
+        'platform': 'android',
+      });
+    } catch (_) {
+      // Polling remains available if registration temporarily fails.
+    }
+  }
+
+  static void openRemoteMessage(RemoteMessage message) {
+    final ticketId = int.tryParse(message.data['ticket_id'] ?? '');
+    if (ticketId != null) {
+      pendingTicketId = ticketId;
+      ticketClicks.add(ticketId);
+    }
+  }
+
+  static Future<void> showRemoteMessage(RemoteMessage message) async {
+    final prefs = await SharedPreferences.getInstance();
+    if (!(prefs.getBool('notifications_enabled') ?? true)) return;
+    final notificationId = int.tryParse(message.data['notification_id'] ?? '');
+    final base = await _secureStorage.read(key: 'api_base_url');
+    if (notificationId != null && base != null) {
+      final key =
+          'notification_latest_${base.replaceAll(RegExp(r'[^a-zA-Z0-9]'), '_')}';
+      final previous = prefs.getInt(key) ?? 0;
+      if (notificationId > previous) await prefs.setInt(key, notificationId);
+    }
+    await show(
+      id: notificationId ?? message.messageId.hashCode,
+      title: message.data['title'] ?? 'Pembaruan AduanHub',
+      body: message.data['body'] ?? '',
+      ticketId: message.data['ticket_id'],
+      sound: prefs.getBool('notification_sound') ?? true,
+      vibration: prefs.getBool('notification_vibration') ?? true,
+    );
   }
 
   static Future<int> poll(ApiClient api, {bool background = false}) async {
@@ -98,6 +179,14 @@ class MobileNotifications {
       payload: ticketId,
     );
   }
+}
+
+@pragma('vm:entry-point')
+Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await Firebase.initializeApp();
+  await MobileNotifications.initialize();
+  await MobileNotifications.showRemoteMessage(message);
 }
 
 @pragma('vm:entry-point')

@@ -3,7 +3,7 @@ from email import policy
 from email.header import decode_header, make_header
 from email.utils import parseaddr
 from html.parser import HTMLParser
-from app import app, db, decrypt_secret, next_ticket_code, send_ticket_email, store_upload
+from app import app, create_notification, db, decrypt_secret, next_ticket_code, send_ticket_email, store_upload
 
 INTERVAL=max(15,int(os.getenv("EMAIL_POLL_SECONDS","60")))
 
@@ -77,7 +77,7 @@ def process_message(config,raw):
         tid=ticket["id"]
     db().execute("INSERT INTO messages(ticket_id,direction,body,sender,delivery_status,channel,external_id) VALUES(?,?,?,?,?,?,?)",(tid,"in",body,sender_name or sender_email,"received","email",message_id))
     for path,name,mime in files: db().execute("INSERT INTO messages(ticket_id,direction,body,sender,attachment_path,attachment_name,attachment_type,delivery_status,channel,external_id) VALUES(?,?,?,?,?,?,?,?,?,?)",(tid,"in","",sender_name or sender_email,path,name,mime,"received","email",message_id+":"+path))
-    db().execute("INSERT INTO email_receipts(org_id,message_id,ticket_id) VALUES(?,?,?)",(config["org_id"],message_id,tid)); db().execute("UPDATE tickets SET updated_at=CURRENT_TIMESTAMP WHERE id=?",(tid,)); title="Aduan email baru" if created else "Balasan email baru"; db().execute("INSERT INTO notifications(org_id,ticket_id,title,body) VALUES(?,?,?,?)",(config["org_id"],tid,title,f"{sender_name or sender_email}: {subject}")); db().commit()
+    db().execute("INSERT INTO email_receipts(org_id,message_id,ticket_id) VALUES(?,?,?)",(config["org_id"],message_id,tid)); db().execute("UPDATE tickets SET updated_at=CURRENT_TIMESTAMP WHERE id=?",(tid,)); title="Aduan email baru" if created else "Balasan email baru"; create_notification(config["org_id"],tid,title,f"{sender_name or sender_email}: {subject}"); db().commit()
     if created and config["auto_reply"]:
         full=db().execute("SELECT t.*,c.email,c.phone FROM tickets t JOIN contacts c ON c.id=t.contact_id WHERE t.id=?",(tid,)).fetchone(); text=f"Email Anda telah kami terima dan tercatat dengan nomor {full['code']}. Simpan nomor ini untuk komunikasi selanjutnya."
         ok,_=send_ticket_email(full,text)

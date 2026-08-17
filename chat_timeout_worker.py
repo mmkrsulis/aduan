@@ -3,6 +3,7 @@ import sqlite3
 import time
 
 import requests
+from app import app, create_notification, db as app_db
 
 DB=os.getenv("DATABASE_PATH","/data/aduan.db")
 
@@ -19,6 +20,7 @@ def send(org,phone,message):
 
 def process_one():
     con=sqlite3.connect(DB,timeout=30); con.row_factory=sqlite3.Row; con.execute("PRAGMA busy_timeout=30000")
+    notification=None
     try:
         con.execute("BEGIN IMMEDIATE")
         chat=con.execute("SELECT * FROM chat_requests WHERE status='pending' AND expires_at<=CURRENT_TIMESTAMP ORDER BY expires_at LIMIT 1").fetchone()
@@ -31,9 +33,13 @@ def process_one():
             con.execute("UPDATE chat_requests SET status='expired',expired_at=CURRENT_TIMESTAMP WHERE id=?",(chat["id"],))
             con.execute("UPDATE conversation_states SET step='menu',human_takeover=0,data='{}',updated_at=CURRENT_TIMESTAMP WHERE org_id=? AND phone=?",(chat["org_id"],chat["phone"]))
             con.execute("INSERT INTO messages(ticket_id,direction,body,sender,delivery_status) VALUES(?,?,?,?,?)",(chat["ticket_id"],"out",message,"Sistem","sent"))
-            con.execute("INSERT INTO notifications(org_id,ticket_id,title,body) VALUES(?,?,?,?)",(chat["org_id"],chat["ticket_id"],"Permintaan chat kedaluwarsa","Tidak ada petugas yang mengonfirmasi dalam 5 menit."))
+            notification=(chat["org_id"],chat["ticket_id"],"Permintaan chat kedaluwarsa","Tidak ada petugas yang mengonfirmasi dalam 5 menit.")
         else: con.execute("UPDATE chat_requests SET status='pending' WHERE id=?",(chat["id"],))
-        con.commit(); return True
+        con.commit()
+        if notification:
+            with app.app_context():
+                create_notification(*notification); app_db().commit()
+        return True
     finally: con.close()
 
 if __name__=="__main__":

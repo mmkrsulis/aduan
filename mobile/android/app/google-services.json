@@ -1,0 +1,32 @@
+{
+  "project_info": {
+    "project_number": "1070042120143",
+    "project_id": "aduanhub",
+    "storage_bucket": "aduanhub.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1070042120143:android:2b353d2472c87492e05cba",
+        "android_client_info": {
+          "package_name": "aduanhub.rekakarsa.com"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [{"current_key": "AIzaSyB19tlYjGmECqiKZ1tp323aGrPfEF5Rf3w"}],
+      "services": {"appinvite_service": {"other_platform_oauth_client": []}}
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1070042120143:android:7c6fbd865bba1d70e05cba",
+        "android_client_info": {
+          "package_name": "site.rekadev.aduanhub"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [{"current_key": "AIzaSyB19tlYjGmECqiKZ1tp323aGrPfEF5Rf3w"}],
+      "services": {"appinvite_service": {"other_platform_oauth_client": []}}
+    }
+  ],
+  "configuration_version": "1"
+}

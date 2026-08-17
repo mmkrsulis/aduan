@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:intl/intl.dart';
@@ -14,6 +16,8 @@ const storage = FlutterSecureStorage();
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await Firebase.initializeApp();
+  FirebaseMessaging.onBackgroundMessage(firebaseMessagingBackgroundHandler);
   await MobileNotifications.initialize();
   await Workmanager().initialize(backgroundDispatcher);
   await Workmanager().registerPeriodicTask(
@@ -52,6 +56,7 @@ class _AduanHubAppState extends State<AduanHubApp> {
       try {
         profile = await client.get('/me');
         api = client;
+        await MobileNotifications.bindFirebase(client);
       } catch (_) {
         await storage.delete(key: 'token');
       }
@@ -67,6 +72,7 @@ class _AduanHubAppState extends State<AduanHubApp> {
     await storage.write(key: 'api_base_url', value: resolvedBase);
     final client = ApiClient(token, resolvedBase);
     final me = await client.get('/me');
+    await MobileNotifications.bindFirebase(client);
     setState(() {
       api = client;
       profile = me;
@@ -74,6 +80,7 @@ class _AduanHubAppState extends State<AduanHubApp> {
   }
 
   Future<void> signOut() async {
+    await MobileNotifications.unbindFirebase();
     await storage.delete(key: 'token');
     setState(() {
       api = null;

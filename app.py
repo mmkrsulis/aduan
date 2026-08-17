@@ -10,6 +10,8 @@ from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
 from cryptography.fernet import Fernet, InvalidToken
 import requests
 import qrcode
+from google.auth.transport.requests import Request as GoogleAuthRequest
+from google.oauth2 import service_account
 from zoneinfo import ZoneInfo
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4, landscape
@@ -108,6 +110,7 @@ CREATE TABLE IF NOT EXISTS conversation_states(id INTEGER PRIMARY KEY, org_id IN
 CREATE TABLE IF NOT EXISTS chat_requests(id INTEGER PRIMARY KEY, org_id INTEGER NOT NULL, ticket_id INTEGER NOT NULL, phone TEXT NOT NULL, language TEXT DEFAULT 'id', status TEXT DEFAULT 'pending', expires_at TEXT NOT NULL, approved_by INTEGER, approved_at TEXT, expired_at TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(org_id) REFERENCES organizations(id), FOREIGN KEY(ticket_id) REFERENCES tickets(id) ON DELETE CASCADE, FOREIGN KEY(approved_by) REFERENCES users(id));
 CREATE TABLE IF NOT EXISTS mobile_pairings(id INTEGER PRIMARY KEY, org_id INTEGER NOT NULL, user_id INTEGER NOT NULL, token_hash TEXT UNIQUE NOT NULL, expires_at TEXT NOT NULL, used_at TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(org_id) REFERENCES organizations(id), FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE);
 CREATE TABLE IF NOT EXISTS mobile_devices(id INTEGER PRIMARY KEY, org_id INTEGER NOT NULL, user_id INTEGER NOT NULL, name TEXT NOT NULL, platform TEXT DEFAULT 'android', last_seen_at TEXT, revoked_at TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(org_id) REFERENCES organizations(id), FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE);
+CREATE TABLE IF NOT EXISTS mobile_push_tokens(id INTEGER PRIMARY KEY, org_id INTEGER NOT NULL, user_id INTEGER NOT NULL, token TEXT UNIQUE NOT NULL, platform TEXT DEFAULT 'android', updated_at TEXT DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(org_id) REFERENCES organizations(id), FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE);
 CREATE TABLE IF NOT EXISTS email_configs(id INTEGER PRIMARY KEY, org_id INTEGER UNIQUE NOT NULL, enabled INTEGER DEFAULT 0, address TEXT, sender_name TEXT, imap_host TEXT, imap_port INTEGER DEFAULT 993, imap_security TEXT DEFAULT 'ssl', imap_username TEXT, imap_password TEXT, imap_folder TEXT DEFAULT 'INBOX', smtp_host TEXT, smtp_port INTEGER DEFAULT 587, smtp_security TEXT DEFAULT 'starttls', smtp_username TEXT, smtp_password TEXT, signature TEXT, auto_reply INTEGER DEFAULT 1, last_checked_at TEXT, last_error TEXT, updated_at TEXT DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(org_id) REFERENCES organizations(id));
 CREATE TABLE IF NOT EXISTS email_receipts(id INTEGER PRIMARY KEY, org_id INTEGER NOT NULL, message_id TEXT NOT NULL, ticket_id INTEGER, received_at TEXT DEFAULT CURRENT_TIMESTAMP, UNIQUE(org_id,message_id), FOREIGN KEY(org_id) REFERENCES organizations(id), FOREIGN KEY(ticket_id) REFERENCES tickets(id) ON DELETE SET NULL);
 """
@@ -244,13 +247,59 @@ def scoped_ticket_where(alias="t"):
     if session.get("role")=="agent": return f"{alias}.unit=? AND ({alias}.assignee_id IS NULL OR {alias}.assignee_id=?)",[session.get("unit") or "",session.get("uid")]
     return f"{alias}.unit=?",[session.get("unit") or ""]
 
+_fcm_credentials = None
+
+def firebase_credentials():
+    global _fcm_credentials
+    if _fcm_credentials is not None: return _fcm_credentials
+    value=os.getenv("FCM_SERVICE_ACCOUNT_JSON","").strip()
+    path=os.getenv("FCM_SERVICE_ACCOUNT_FILE","").strip()
+    if not value and path:
+        try:
+            with open(path,encoding="utf-8") as handle: value=handle.read()
+        except OSError: return None
+    if not value: return None
+    try:
+        info=json.loads(value)
+        _fcm_credentials=service_account.Credentials.from_service_account_info(info,scopes=["https://www.googleapis.com/auth/firebase.messaging"])
+        return _fcm_credentials
+    except (ValueError,KeyError,TypeError): return None
+
+def send_fcm(org_id,user_id,notification_id,ticket_id,title,body):
+    try: credentials=firebase_credentials()
+    except Exception: return
+    if not credentials: return
+    try:
+        if not credentials.valid: credentials.refresh(GoogleAuthRequest())
+    except Exception: return
+    project_id=getattr(credentials,"project_id",None)
+    if not project_id: return
+    if user_id:
+        rows=db().execute("SELECT id,token FROM mobile_push_tokens WHERE org_id=? AND user_id=?",(org_id,user_id)).fetchall()
+    else:
+        rows=db().execute("SELECT p.id,p.token FROM mobile_push_tokens p JOIN users u ON u.id=p.user_id WHERE p.org_id=? AND u.active=1 AND u.role IN ('owner','admin')",(org_id,)).fetchall()
+    endpoint=f"https://fcm.googleapis.com/v1/projects/{project_id}/messages:send"
+    headers={"Authorization":f"Bearer {credentials.token}","Content-Type":"application/json"}
+    for row in rows:
+        payload={"message":{"token":row["token"],"data":{"notification_id":str(notification_id),"ticket_id":str(ticket_id or ""),"title":title,"body":body or ""},"android":{"priority":"high"}}}
+        try:
+            response=requests.post(endpoint,headers=headers,json=payload,timeout=8)
+            if response.status_code in (404,410): db().execute("DELETE FROM mobile_push_tokens WHERE id=?",(row["id"],))
+        except requests.RequestException:
+            pass
+
+def create_notification(org_id,ticket_id,title,body,user_id=None):
+    cur=db().execute("INSERT INTO notifications(org_id,user_id,ticket_id,title,body) VALUES(?,?,?,?,?)",(org_id,user_id,ticket_id,title,body))
+    send_fcm(org_id,user_id,cur.lastrowid,ticket_id,title,body)
+    return cur.lastrowid
+
 def notify_assigned_users(org_id,ticket_id,title,body,unit=None,assignee_id=None):
     params=[org_id]; where="org_id=? AND active=1 AND role IN ('supervisor','agent')"
     if assignee_id: where+=" AND (id=? OR (role='supervisor' AND unit=?))"; params.extend([assignee_id,unit or ""])
     elif unit: where+=" AND unit=?"; params.append(unit)
     else: return
     for user in db().execute(f"SELECT id FROM users WHERE {where}",params).fetchall():
-        db().execute("INSERT INTO notifications(org_id,user_id,ticket_id,title,body) VALUES(?,?,?,?,?)",(org_id,user["id"],ticket_id,title,body))
+        create_notification(org_id,ticket_id,title,body,user["id"])
 
 @app.context_processor
 def ctx():
@@ -823,7 +872,7 @@ def flow_reply(org,phone,body,name,attachment=None):
             expires=(datetime.now(timezone.utc)+timedelta(minutes=5)).strftime("%Y-%m-%d %H:%M:%S")
             db().execute("UPDATE chat_requests SET status='cancelled' WHERE org_id=? AND phone=? AND status='pending'",(org["id"],phone))
             db().execute("INSERT INTO chat_requests(org_id,ticket_id,phone,language,expires_at) VALUES(?,?,?,?,?)",(org["id"],tid,phone,lang,expires))
-            db().execute("INSERT INTO notifications(org_id,ticket_id,title,body) VALUES(?,?,?,?)",(org["id"],tid,"Permintaan chat menunggu konfirmasi",f"{name or phone} menunggu petugas layanan. Konfirmasi maksimal 5 menit ({code})."))
+            create_notification(org["id"],tid,"Permintaan chat menunggu konfirmasi",f"{name or phone} menunggu petugas layanan. Konfirmasi maksimal 5 menit ({code}).")
             db().execute("UPDATE conversation_states SET step='chat_waiting',human_takeover=1,data='{}',updated_at=CURRENT_TIMESTAMP WHERE id=?",(state["id"],)); db().commit()
             return fill(flow["chat_waiting_id" if lang=="id" else "chat_waiting_en"],org,{"code":code})
         if selected and selected.get("action")=="custom": return move("menu",fill(selected.get("response_id" if lang=="id" else "response_en") or selected.get("response_id") or "-",org))
@@ -870,7 +919,7 @@ def flow_reply(org,phone,body,name,attachment=None):
         code=next_ticket_code(org)
         db().execute("INSERT INTO tickets(org_id,contact_id,code,subject) VALUES(?,?,?,?)",(org["id"],cid,code,data["description"][:100])); tid=db().execute("SELECT last_insert_rowid()").fetchone()[0]
         media=data.get("attachment") or {}
-        db().execute("INSERT INTO messages(ticket_id,direction,body,sender,attachment_path,attachment_name,attachment_type) VALUES(?,?,?,?,?,?,?)",(tid,"in",data["description"],data["name"],media.get("path"),media.get("name"),media.get("type"))); db().execute("INSERT INTO notifications(org_id,ticket_id,title,body) VALUES(?,?,?,?)",(org["id"],tid,"Aduan WhatsApp baru",f"{data['name']}: {data['description'][:120]}")); db().execute("UPDATE conversation_states SET step='ticket_chat',data=?,human_takeover=1,updated_at=CURRENT_TIMESTAMP WHERE id=?",(json.dumps({"ticket_id":tid}),state["id"])); db().commit()
+        db().execute("INSERT INTO messages(ticket_id,direction,body,sender,attachment_path,attachment_name,attachment_type) VALUES(?,?,?,?,?,?,?)",(tid,"in",data["description"],data["name"],media.get("path"),media.get("name"),media.get("type"))); create_notification(org["id"],tid,"Aduan WhatsApp baru",f"{data['name']}: {data['description'][:120]}"); db().execute("UPDATE conversation_states SET step='ticket_chat',data=?,human_takeover=1,updated_at=CURRENT_TIMESTAMP WHERE id=?",(json.dumps({"ticket_id":tid}),state["id"])); db().commit()
         return fill(flow["completion_id" if lang=="id" else "completion_en"],org,code=code)
     return move("menu",fill(welcome,org),{})
 
@@ -930,6 +979,21 @@ def api_me():
     u=g.api_user
     unread=db().execute("SELECT count(*) FROM notifications WHERE org_id=? AND user_id=? AND read_at IS NULL",(u["org_id"],u["id"])).fetchone()[0] if u["role"] not in ("owner","admin") else db().execute("SELECT count(*) FROM notifications WHERE org_id=? AND read_at IS NULL AND (user_id IS NULL OR user_id=?)",(u["org_id"],u["id"])).fetchone()[0]
     return jsonify(user={"id":u["id"],"name":u["name"],"email":u["email"],"role":u["role"],"unit":u["unit"] or ""},organization={"name":u["org_name"],"app_name":u["app_name"],"accent":u["accent"],"logo":url_for("media_file",filename=u["logo"],_external=True) if u["logo"] else None},unread=unread)
+
+@app.post("/api/v1/devices/push-token")
+@api_auth
+def api_push_token_register():
+    u=g.api_user; body=request.get_json(silent=True) or {}; token=str(body.get("token") or "").strip(); platform=str(body.get("platform") or "android")[:20]
+    if not token or len(token)>4096: return jsonify(error="invalid_token"),400
+    db().execute("INSERT INTO mobile_push_tokens(org_id,user_id,token,platform,updated_at) VALUES(?,?,?,?,CURRENT_TIMESTAMP) ON CONFLICT(token) DO UPDATE SET org_id=excluded.org_id,user_id=excluded.user_id,platform=excluded.platform,updated_at=CURRENT_TIMESTAMP",(u["org_id"],u["id"],token,platform)); db().commit()
+    return jsonify(status="registered")
+
+@app.post("/api/v1/devices/push-token/remove")
+@api_auth
+def api_push_token_remove():
+    u=g.api_user; token=str((request.get_json(silent=True) or {}).get("token") or "").strip()
+    if token: db().execute("DELETE FROM mobile_push_tokens WHERE token=? AND user_id=?",(token,u["id"])); db().commit()
+    return jsonify(status="removed")
 
 def api_scope(user,alias="t"):
     if user["role"] in ("owner","admin"): return "1=1",[]
@@ -1059,7 +1123,7 @@ def webhook(slug):
     if not t:
         code=next_ticket_code(org); db().execute("INSERT INTO tickets(org_id,contact_id,code,subject) VALUES(?,?,?,?)",(org["id"],cid,code,body[:100])); tid=db().execute("SELECT last_insert_rowid()").fetchone()[0]
     else: tid=t["id"]
-    db().execute("INSERT INTO messages(ticket_id,direction,body,sender,attachment_path,attachment_name,attachment_type) VALUES(?,?,?,?,?,?,?)",(tid,"in",body,name,*(attachment or (None,None,None)))); db().execute("UPDATE tickets SET updated_at=CURRENT_TIMESTAMP WHERE id=?",(tid,)); db().execute("INSERT INTO notifications(org_id,ticket_id,title,body) VALUES(?,?,?,?)",(org["id"],tid,"Pesan baru dari pengadu",f"{name}: {body[:120]}")); notify_assigned_users(org["id"],tid,"Pesan baru dari pengadu",f"{t['code'] if t else code}: {body[:120]}",t["unit"] if t else None,t["assignee_id"] if t else None); db().commit(); return jsonify(status=True,ticket_id=tid)
+    db().execute("INSERT INTO messages(ticket_id,direction,body,sender,attachment_path,attachment_name,attachment_type) VALUES(?,?,?,?,?,?,?)",(tid,"in",body,name,*(attachment or (None,None,None)))); db().execute("UPDATE tickets SET updated_at=CURRENT_TIMESTAMP WHERE id=?",(tid,)); create_notification(org["id"],tid,"Pesan baru dari pengadu",f"{name}: {body[:120]}"); notify_assigned_users(org["id"],tid,"Pesan baru dari pengadu",f"{t['code'] if t else code}: {body[:120]}",t["unit"] if t else None,t["assignee_id"] if t else None); db().commit(); return jsonify(status=True,ticket_id=tid)
 
 with app.app_context(): init_db()
 if __name__=="__main__": app.run(host="0.0.0.0",port=8080,debug=True)
