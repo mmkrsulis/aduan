@@ -1,1 +1,84 @@
-{% extends 'base.html' %}{% block title %}{{'Pengguna' if lang=='id' else 'Users'}} · {{brand.app_name or 'AduanHub'}}{% endblock %}{% block heading %}{{'Manajemen pengguna' if lang=='id' else 'User management'}}{% endblock %}{% block subheading %}{{'Kelola akses, peran, unit, dan keamanan akun' if lang=='id' else 'Manage access, roles, units, and security'}}{% endblock %}{% block content %}<div class="users-layout"><section class="panel"><div class="panel-head"><div><h3>{{'Pengguna workspace' if lang=='id' else 'Workspace users'}}</h3><p>{{users|length}} {{'anggota terdaftar' if lang=='id' else 'registered members'}}</p></div></div><div class="user-list">{% for u in users %}<article class="user-row"><div class="avatar">{{u.name[0]}}</div><div class="user-identity"><b>{{u.name}}{% if u.id==me.uid %}<em>{{'Anda' if lang=='id' else 'You'}}</em>{% endif %}</b><span>{{u.email}}</span><small>{{u.unit or ('Tanpa unit' if lang=='id' else 'No unit')}} · {{'Login terakhir' if lang=='id' else 'Last login'}}: {{localdt(u.last_login)}}</small></div><span class="role">{{u.role}}</span><span class="user-state {% if u.active %}active{% endif %}">{{'Aktif' if u.active and lang=='id' else ('Active' if u.active else ('Nonaktif' if lang=='id' else 'Inactive'))}}</span><div class="user-actions"><button type="button" class="secondary" onclick="document.getElementById('edit-user-{{u.id}}').showModal()">{{'Edit' if lang=='id' else 'Edit'}}</button><form method="post" action="{{url_for('toggle_user',uid=u.id)}}"><button class="secondary" {% if u.id==me.uid %}disabled{% endif %}>{{'Nonaktifkan' if u.active and lang=='id' else ('Disable' if u.active else ('Aktifkan' if lang=='id' else 'Enable'))}}</button></form><form method="post" action="{{url_for('delete_user',uid=u.id)}}" onsubmit="return confirm('{{'Hapus pengguna ' if lang=='id' else 'Delete user '}}{{u.name}}?')"><button class="danger-button" {% if u.id==me.uid %}disabled{% endif %}>{{'Hapus' if lang=='id' else 'Delete'}}</button></form></div></article><dialog id="edit-user-{{u.id}}" class="edit-dialog"><form method="post" action="{{url_for('update_user',uid=u.id)}}"><div class="dialog-heading"><div><h3>{{'Edit pengguna' if lang=='id' else 'Edit user'}}</h3><p>{{u.email}}</p></div><button type="button" class="dialog-close" onclick="this.closest('dialog').close()">×</button></div><div class="dialog-grid"><label>{{'Nama lengkap' if lang=='id' else 'Full name'}}<input name="name" value="{{u.name}}" required></label><label>Email<input name="email" type="email" value="{{u.email}}" required></label><label>{{'Peran' if lang=='id' else 'Role'}}<select name="role">{% for role in ['owner','admin','supervisor','agent','viewer'] %}<option value="{{role}}" {% if u.role==role %}selected{% endif %}>{{role|title}}</option>{% endfor %}</select></label><label>{{'Unit / bidang' if lang=='id' else 'Unit / department'}}<input name="unit" value="{{u.unit or ''}}"></label><label class="full">{{'Kata sandi baru (opsional)' if lang=='id' else 'New password (optional)'}}<input name="password" type="password" minlength="8" autocomplete="new-password"><small>{{'Kosongkan jika tidak ingin mengganti kata sandi.' if lang=='id' else 'Leave blank to keep the current password.'}}</small></label></div><div class="dialog-actions"><button type="button" class="secondary" onclick="this.closest('dialog').close()">{{'Batal' if lang=='id' else 'Cancel'}}</button><button class="primary">{{'Simpan perubahan' if lang=='id' else 'Save changes'}}</button></div></form></dialog>{% endfor %}</div></section><form method="post" class="panel user-create"><div class="panel-head"><div><h3>{{'Tambah pengguna' if lang=='id' else 'Add user'}}</h3><p>{{'Buat akses dengan kata sandi sementara' if lang=='id' else 'Create access with a temporary password'}}</p></div></div><div class="user-create-body"><label>{{'Nama lengkap' if lang=='id' else 'Full name'}}<input name="name" required></label><label>Email<input name="email" type="email" required></label><label>{{'Kata sandi sementara' if lang=='id' else 'Temporary password'}}<input name="password" type="password" minlength="8" required></label><label>{{'Peran' if lang=='id' else 'Role'}}<select name="role"><option>agent</option><option>supervisor</option><option>viewer</option><option>admin</option><option>owner</option></select></label><label>{{'Unit / bidang' if lang=='id' else 'Unit / department'}}<input name="unit"></label><button class="primary wide">{{'Tambah pengguna' if lang=='id' else 'Create user'}}</button></div></form></div>{% endblock %}
+{% extends 'base.html' %}{% block title %}{{'Pengguna' if lang=='id' else 'Users'}} · {{brand.app_name or 'AduanHub'}}{% endblock %}{% block heading %}{{'Manajemen pengguna' if lang=='id' else 'User management'}}{% endblock %}{% block subheading %}{{'Kelola akses, peran, unit, dan keamanan akun' if lang=='id' else 'Manage access, roles, units, and security'}}{% endblock %}{% block content %}<div class="users-layout">
+<section class="panel">
+<div class="panel-head">
+<div>
+<h3>{{'Pengguna workspace' if lang=='id' else 'Workspace users'}}</h3>
+<p>{{users|length}} {{'anggota terdaftar' if lang=='id' else 'registered members'}}</p>
+</div>
+</div>
+<div class="user-list">{% for u in users %}<article class="user-row">
+<div class="avatar">{{u.name[0]}}</div>
+<div class="user-identity">
+<b>{{u.name}}{% if u.id==me.uid %}<em>{{'Anda' if lang=='id' else 'You'}}</em>{% endif %}</b>
+<span>{{u.email}}</span>
+<small>{{u.unit or ('Tanpa unit' if lang=='id' else 'No unit')}} · {{'Login terakhir' if lang=='id' else 'Last login'}}: {{localdt(u.last_login)}}</small>
+</div>
+<span class="role">{{u.role}}</span>
+<span class="user-state {% if u.active %}active{% endif %}">{{'Aktif' if u.active and lang=='id' else ('Active' if u.active else ('Nonaktif' if lang=='id' else 'Inactive'))}}</span>
+<div class="user-actions">
+<button type="button" class="secondary" onclick="document.getElementById('edit-user-{{u.id}}').showModal()">{{'Edit' if lang=='id' else 'Edit'}}</button>
+<form method="post" action="{{url_for('toggle_user',uid=u.id)}}">
+<button class="secondary" {% if u.id==me.uid %}disabled{% endif %}>{{'Nonaktifkan' if u.active and lang=='id' else ('Disable' if u.active else ('Aktifkan' if lang=='id' else 'Enable'))}}</button>
+</form>
+<form method="post" action="{{url_for('delete_user',uid=u.id)}}" onsubmit="return confirm('{{'Hapus pengguna ' if lang=='id' else 'Delete user '}}{{u.name}}?')">
+<button class="danger-button" {% if u.id==me.uid %}disabled{% endif %}>{{'Hapus' if lang=='id' else 'Delete'}}</button>
+</form>
+</div>
+</article>
+<dialog id="edit-user-{{u.id}}" class="edit-dialog">
+<form method="post" action="{{url_for('update_user',uid=u.id)}}">
+<div class="dialog-heading">
+<div>
+<h3>{{'Edit pengguna' if lang=='id' else 'Edit user'}}</h3>
+<p>{{u.email}}</p>
+</div>
+<button type="button" class="dialog-close" onclick="this.closest('dialog').close()">×</button>
+</div>
+<div class="dialog-grid">
+<label>{{'Nama lengkap' if lang=='id' else 'Full name'}}<input name="name" value="{{u.name}}" required>
+</label>
+<label>Email<input name="email" type="email" value="{{u.email}}" required>
+</label>
+<label>{{'Peran' if lang=='id' else 'Role'}}<select name="role">{% for role in ['owner','admin','supervisor','agent','viewer'] %}<option value="{{role}}" {% if u.role==role %}selected{% endif %}>{{role|title}}</option>{% endfor %}</select>
+</label>
+<label>{{'Unit / bidang' if lang=='id' else 'Unit / department'}}<select name="unit"><option value="">{{'Tanpa unit' if lang=='id' else 'No unit'}}</option>{% for unit in units %}<option value="{{unit.name}}" {% if u.unit==unit.name %}selected{% endif %}>{{unit.name}}</option>{% endfor %}</select>
+</label>
+<label class="full">{{'Kata sandi baru (opsional)' if lang=='id' else 'New password (optional)'}}<input name="password" type="password" minlength="8" autocomplete="new-password">
+<small>{{'Kosongkan jika tidak ingin mengganti kata sandi.' if lang=='id' else 'Leave blank to keep the current password.'}}</small>
+</label>
+</div>
+<div class="dialog-actions">
+<button type="button" class="secondary" onclick="this.closest('dialog').close()">{{'Batal' if lang=='id' else 'Cancel'}}</button>
+<button class="primary">{{'Simpan perubahan' if lang=='id' else 'Save changes'}}</button>
+</div>
+</form>
+</dialog>{% endfor %}</div>
+</section>
+<form method="post" class="panel user-create">
+<div class="panel-head">
+<div>
+<h3>{{'Tambah pengguna' if lang=='id' else 'Add user'}}</h3>
+<p>{{'Buat akses dengan kata sandi sementara' if lang=='id' else 'Create access with a temporary password'}}</p>
+</div>
+</div>
+<div class="user-create-body">
+<label>{{'Nama lengkap' if lang=='id' else 'Full name'}}<input name="name" required>
+</label>
+<label>Email<input name="email" type="email" required>
+</label>
+<label>{{'Kata sandi sementara' if lang=='id' else 'Temporary password'}}<input name="password" type="password" minlength="8" required>
+</label>
+<label>{{'Peran' if lang=='id' else 'Role'}}<select name="role">
+<option>agent</option>
+<option>supervisor</option>
+<option>viewer</option>
+<option>admin</option>
+<option>owner</option>
+</select>
+</label>
+<label>{{'Unit / bidang' if lang=='id' else 'Unit / department'}}<select name="unit"><option value="">{{'Pilih unit' if lang=='id' else 'Select unit'}}</option>{% for unit in units %}<option value="{{unit.name}}">{{unit.name}}</option>{% endfor %}</select>
+</label>
+<button class="primary wide">{{'Tambah pengguna' if lang=='id' else 'Create user'}}</button>
+</div>
+</form>
+</div>{% endblock %}

@@ -5,25 +5,124 @@
 {% block content %}
 <div class="case-layout">
   <div class="panel conversation">
-    <div class="contact-head"><div class="avatar">{{t.contact[0]}}</div><div><b>{{t.contact}}</b><span>{{t.phone}} · {{t.location or tr('Location not provided')}}</span></div><span class="badge {{t.status}}">{{tr(t.status|replace('_',' '))}}</span></div>
-    <div class="case-timebar"><span><b>{{'Diterima' if lang=='id' else 'Received'}}</b>{{t.created_at}}</span><span><b>{{'Terakhir diperbarui' if lang=='id' else 'Last updated'}}</b>{{t.updated_at}}</span>{% if t.closed_at %}<span><b>{{'Selesai' if lang=='id' else 'Closed'}}</b>{{t.closed_at}}</span>{% endif %}</div>
-    <div class="messages">{% for m in msgs %}<div class="message {{m.direction}} {% if m.internal %}internal{% endif %}"><small>{{tr('Internal note') if m.internal else m.sender}} · {{m.created_at}}{% if m.direction=='out' and not m.internal %} · {{m.delivery_status or 'sent'}}{% endif %}</small>{% if m.body %}<p>{{m.body}}</p>{% endif %}{% if m.attachment_path %}<div class="attachment">{% if m.attachment_type.startswith('image/') %}<img src="{{url_for('media_file',filename=m.attachment_path)}}" alt="{{m.attachment_name}}">{% elif m.attachment_type.startswith('video/') %}<video controls preload="metadata" src="{{url_for('media_file',filename=m.attachment_path)}}"></video>{% elif m.attachment_type.startswith('audio/') %}<audio controls src="{{url_for('media_file',filename=m.attachment_path)}}"></audio>{% else %}<span>📎</span>{% endif %}<a href="{{url_for('media_file',filename=m.attachment_path,download=1)}}">{{m.attachment_name or ('Unduh lampiran' if lang=='id' else 'Download attachment')}}</a></div>{% endif %}</div>{% endfor %}</div>
-    <form method="post" class="composer" enctype="multipart/form-data"><textarea name="body" placeholder="{{tr('Write a reply or internal note…')}}"></textarea><label class="file-picker">📎 {{'Tambah foto, video, audio, atau PDF (maks. 8 MB)' if lang=='id' else 'Add photo, video, audio, or PDF (max. 8 MB)'}}<input type="file" name="attachment" accept="image/jpeg,image/png,image/webp,video/mp4,audio/mpeg,audio/ogg,application/pdf"></label><div><button name="action" value="note" class="secondary">{{tr('Add internal note')}}</button><button name="action" value="reply" class="primary"><span data-icon="send"></span>{{tr('Reply')}}</button></div></form>
+    <div class="contact-head">
+<div class="avatar">{{t.contact[0]}}</div>
+<div>
+<b>{{t.contact}}</b>
+<span>{{t.phone}} · {{t.location or tr('Location not provided')}}</span>
+</div>
+<span class="badge {{t.status}}">{{tr(t.status|replace('_',' '))}}</span>
+</div>
+    <div class="case-timebar">
+<span>
+<b>{{'Diterima' if lang=='id' else 'Received'}}</b>{{t.created_at}}</span>
+<span>
+<b>{{'Terakhir diperbarui' if lang=='id' else 'Last updated'}}</b>{{t.updated_at}}</span>{% if t.closed_at %}<span>
+<b>{{'Selesai' if lang=='id' else 'Closed'}}</b>{{t.closed_at}}</span>{% endif %}</div>
+    <div class="messages">{% for m in msgs %}<div class="message {{m.direction}} {% if m.internal %}internal{% endif %}">
+<small>{{tr('Internal note') if m.internal else m.sender}} · {{m.created_at}}{% if m.direction=='out' and not m.internal %} · {{m.delivery_status or 'sent'}}{% endif %}</small>{% if m.body %}<p>{{m.body}}</p>{% endif %}{% if m.attachment_path %}<div class="attachment">{% if m.attachment_type.startswith('image/') %}<img src="{{url_for('media_file',filename=m.attachment_path)}}" alt="{{m.attachment_name}}">{% elif m.attachment_type.startswith('video/') %}<video controls preload="metadata" src="{{url_for('media_file',filename=m.attachment_path)}}">
+</video>{% elif m.attachment_type.startswith('audio/') %}<audio controls src="{{url_for('media_file',filename=m.attachment_path)}}">
+</audio>{% else %}<span>📎</span>{% endif %}<a href="{{url_for('media_file',filename=m.attachment_path,download=1)}}">{{m.attachment_name or ('Unduh lampiran' if lang=='id' else 'Download attachment')}}</a>
+</div>{% endif %}</div>{% endfor %}</div>
+    {% if can_reply %}<form method="post" class="composer" enctype="multipart/form-data">
+<textarea name="body" placeholder="{{tr('Write a reply or internal note…')}}">
+</textarea>
+<label class="file-picker">📎 {{'Tambah foto, video, audio, atau PDF (maks. 8 MB)' if lang=='id' else 'Add photo, video, audio, or PDF (max. 8 MB)'}}<input type="file" name="attachment" accept="image/jpeg,image/png,image/webp,video/mp4,audio/mpeg,audio/ogg,application/pdf">
+</label>
+<div>
+<button name="action" value="note" class="secondary">{{tr('Add internal note')}}</button>
+<button name="action" value="reply" class="primary">
+<span data-icon="send">
+</span>{{tr('Reply')}}</button>
+</div>
+</form>{% else %}<div class="composer locked-composer"><b>Aduan belum didisposisikan kepada akun Anda.</b><span>Admin Pusat harus meneruskan aduan ke unit atau petugas terkait sebelum balasan dapat dikirim.</span></div>{% endif %}
   </div>
   <form method="post" class="panel details">
-    {% if chat_request and chat_request.status=='pending' %}<section class="side-section chat-approval"><div class="side-section-head"><span>!</span><div><h3>Permintaan chat</h3><p>Pelapor menunggu petugas layanan</p></div></div><p class="approval-copy">Konfirmasi sebelum <b>{{chat_request.expires_at}}</b>. Jika tidak dikonfirmasi dalam 5 menit, sistem akan mengirim pemberitahuan otomatis.</p><button name="action" value="approve_chat" class="primary wide">Konfirmasi dan hubungkan</button></section>{% endif %}
-    <section class="side-section"><div class="side-section-head"><span>01</span><div><h3>{{tr('Case details')}}</h3><p>{{'Klasifikasi dan penugasan aduan' if lang=='id' else 'Classification and assignment'}}</p></div></div>
-      <label>{{tr('Status')}}<select name="status">{% for s in statuses %}<option {% if t.status==s %}selected{% endif %} value="{{s}}">{{tr(s|replace('_',' '))|title}}</option>{% endfor %}</select></label>
-      <label>{{tr('Priority')}}<select name="priority">{% for p in ['low','normal','high','urgent'] %}<option value="{{p}}" {% if t.priority==p %}selected{% endif %}>{{tr(p)}}</option>{% endfor %}</select></label>
-      <fieldset class="category-picker"><legend>{{tr('Category')}}</legend><div>{% for category in categories %}<label><input type="radio" name="category" value="{{category.name}}" {% if t.category==category.name %}checked{% endif %}><span>{{category.name}}</span></label>{% endfor %}</div><details class="new-category"><summary>+ {{'Tambah kategori baru' if lang=='id' else 'Add new category'}}</summary><input name="new_category" placeholder="{{'Ketik nama kategori' if lang=='id' else 'Enter category name'}}"></details></fieldset>
-      <label>{{tr('Responsible unit')}}<select name="unit"><option value="">{{tr('Unassigned')}}</option>{% for unit in units %}<option {% if t.unit==unit.name %}selected{% endif %}>{{unit.name}}</option>{% endfor %}</select></label>
-      <label>{{tr('Assignee')}}<select name="assignee"><option value="">{{tr('Unassigned')}}</option>{% for u in users %}<option value="{{u.id}}" {% if t.assignee_id==u.id %}selected{% endif %}>{{u.name}} · {{u.role}}</option>{% endfor %}</select></label>
-      <button name="action" value="update" class="primary wide">{{tr('Save changes')}}</button>
+    {% if can_manage and chat_request and chat_request.status=='pending' %}<section class="side-section chat-approval">
+<div class="side-section-head">
+<span>!</span>
+<div>
+<h3>Permintaan chat</h3>
+<p>Pelapor menunggu petugas layanan</p>
+</div>
+</div>
+<p class="approval-copy">Konfirmasi sebelum <b>{{chat_request.expires_at}}</b>. Jika tidak dikonfirmasi dalam 5 menit, sistem akan mengirim pemberitahuan otomatis.</p>
+<button name="action" value="approve_chat" class="primary wide">Konfirmasi dan hubungkan</button>
+</section>{% endif %}
+    <section class="side-section">
+<div class="side-section-head">
+<span>01</span>
+<div>
+<h3>{{tr('Case details')}}</h3>
+<p>{{'Klasifikasi dan penugasan aduan' if lang=='id' else 'Classification and assignment'}}</p>
+</div>
+</div>
+      <fieldset class="management-fields" {% if not can_manage %}disabled{% endif %}>
+      <label>{{tr('Status')}}<select name="status">{% for s in statuses %}<option {% if t.status==s %}selected{% endif %} value="{{s}}">{{tr(s|replace('_',' '))|title}}</option>{% endfor %}</select>
+</label>
+      <label>{{tr('Priority')}}<select name="priority">{% for p in ['low','normal','high','urgent'] %}<option value="{{p}}" {% if t.priority==p %}selected{% endif %}>{{tr(p)}}</option>{% endfor %}</select>
+</label>
+      <fieldset class="category-picker">
+<legend>{{tr('Category')}}</legend>
+<div>{% for category in categories %}<label>
+<input type="radio" name="category" value="{{category.name}}" {% if t.category==category.name %}checked{% endif %}>
+<span>{{category.name}}</span>
+</label>{% endfor %}</div>
+<details class="new-category">
+<summary>+ {{'Tambah kategori baru' if lang=='id' else 'Add new category'}}</summary>
+<input name="new_category" placeholder="{{'Ketik nama kategori' if lang=='id' else 'Enter category name'}}">
+</details>
+</fieldset>
+      <label>{{tr('Responsible unit')}}<select name="unit">
+<option value="">{{tr('Unassigned')}}</option>{% for unit in units %}<option {% if t.unit==unit.name %}selected{% endif %}>{{unit.name}}</option>{% endfor %}</select>
+</label>
+      <label>{{tr('Assignee')}}<select name="assignee">
+<option value="">{{tr('Unassigned')}}</option>{% for u in users %}<option value="{{u.id}}" data-unit="{{u.unit}}" {% if t.assignee_id==u.id %}selected{% endif %}>{{u.name}} · {{u.unit}} · {{u.role}}</option>{% endfor %}</select>
+</label>
+      {% if can_manage %}<button name="action" value="update" class="primary wide">{{tr('Save changes')}}</button>{% endif %}
+      </fieldset>
     </section>
-    <section class="side-section"><div class="side-section-head"><span>02</span><div><h3>{{'Riwayat aktivitas' if lang=='id' else 'Activity timeline'}}</h3><p>{{'Perubahan terbaru pada aduan' if lang=='id' else 'Recent complaint changes'}}</p></div></div><div class="activity-block">{% for a in activities %}<div><i></i><span><b>{{a.action|replace('.', ' ')|title}}</b><small>{{a.user_name or 'System'}}<br>{{a.created_at}}</small></span></div>{% else %}<p>{{'Belum ada aktivitas petugas.' if lang=='id' else 'No officer activity yet.'}}</p>{% endfor %}</div></section>
-    <section class="side-section"><div class="side-section-head"><span>03</span><div><h3>{{'Teruskan ke petugas' if lang=='id' else 'Forward to officer'}}</h3><p>{{'Kirim ringkasan melalui WhatsApp' if lang=='id' else 'Send summary through WhatsApp'}}</p></div></div><label>{{'Petugas penanggung jawab' if lang=='id' else 'Responsible officer'}}<select name="unit_id"><option value="">{{'Pilih unit' if lang=='id' else 'Select unit'}}</option>{% for unit in units %}<option value="{{unit.id}}">{{unit.name}} · {{unit.officer_name or 'Officer'}} · {{unit.officer_phone or 'No WhatsApp'}}</option>{% endfor %}</select></label><button name="action" value="forward" class="secondary wide">{{'Teruskan ke WhatsApp petugas' if lang=='id' else 'Forward to officer WhatsApp'}}</button></section>
-    {% if me.role in ['owner','admin'] %}<section class="side-section danger-zone"><div class="side-section-head"><span>04</span><div><h3>{{'Zona berbahaya' if lang=='id' else 'Danger zone'}}</h3><p>{{'Tindakan ini tidak dapat dibatalkan' if lang=='id' else 'This action cannot be undone'}}</p></div></div><button type="submit" formaction="{{url_for('delete_ticket',tid=t.id)}}" formmethod="post" class="danger-button wide" onclick="return confirm('{{'Hapus aduan ' if lang=='id' else 'Delete complaint '}}{{t.code}}{{'? Semua percakapan dan lampiran akan dihapus permanen.' if lang=='id' else '? All conversations and attachments will be permanently deleted.'}}')">{{'Hapus aduan' if lang=='id' else 'Delete complaint'}}</button></section>{% endif %}
+    <section class="side-section">
+<div class="side-section-head">
+<span>02</span>
+<div>
+<h3>{{'Riwayat aktivitas' if lang=='id' else 'Activity timeline'}}</h3>
+<p>{{'Perubahan terbaru pada aduan' if lang=='id' else 'Recent complaint changes'}}</p>
+</div>
+</div>
+<div class="activity-block">{% for a in activities %}<div>
+<i>
+</i>
+<span>
+<b>{{a.action|replace('.', ' ')|title}}</b>
+<small>{{a.user_name or 'System'}}<br>{{a.created_at}}</small>
+</span>
+</div>{% else %}<p>{{'Belum ada aktivitas petugas.' if lang=='id' else 'No officer activity yet.'}}</p>{% endfor %}</div>
+</section>
+    {% if can_manage %}<section class="side-section">
+<div class="side-section-head">
+<span>03</span>
+<div>
+<h3>{{'Disposisikan aduan' if lang=='id' else 'Assign complaint'}}</h3>
+<p>{{'Berikan akses kepada bidang tujuan' if lang=='id' else 'Grant access to the responsible unit'}}</p>
+</div>
+</div>
+<label>{{'Unit / bidang tujuan' if lang=='id' else 'Responsible unit'}}<select name="unit_id">
+<option value="">{{'Pilih unit' if lang=='id' else 'Select unit'}}</option>{% for unit in units %}<option value="{{unit.id}}">{{unit.name}} · {{unit.officer_name or 'Officer'}} · {{unit.officer_phone or 'No WhatsApp'}}</option>{% endfor %}</select>
+</label>
+<button name="action" value="forward" class="secondary wide">{{'Disposisikan ke bidang' if lang=='id' else 'Assign to unit'}}</button>
+</section>{% endif %}
+    {% if me.role in ['owner','admin'] %}<section class="side-section danger-zone">
+<div class="side-section-head">
+<span>04</span>
+<div>
+<h3>{{'Zona berbahaya' if lang=='id' else 'Danger zone'}}</h3>
+<p>{{'Tindakan ini tidak dapat dibatalkan' if lang=='id' else 'This action cannot be undone'}}</p>
+</div>
+</div>
+<button type="submit" formaction="{{url_for('delete_ticket',tid=t.id)}}" formmethod="post" class="danger-button wide" onclick="return confirm('{{'Hapus aduan ' if lang=='id' else 'Delete complaint '}}{{t.code}}{{'? Semua percakapan dan lampiran akan dihapus permanen.' if lang=='id' else '? All conversations and attachments will be permanently deleted.'}}')">{{'Hapus aduan' if lang=='id' else 'Delete complaint'}}</button>
+</section>{% endif %}
   </form>
 </div>
-<script>const chat=document.querySelector('.messages');if(chat)chat.scrollTop=chat.scrollHeight</script>
+<script>const chat=document.querySelector('.messages');if(chat)chat.scrollTop=chat.scrollHeight;const unitSelect=document.querySelector('select[name="unit"]'),assigneeSelect=document.querySelector('select[name="assignee"]');function filterAssignees(){if(!unitSelect||!assigneeSelect)return;[...assigneeSelect.options].forEach((option,index)=>{if(index)option.hidden=option.dataset.unit!==unitSelect.value});if(assigneeSelect.selectedOptions[0]?.hidden)assigneeSelect.value=''}unitSelect?.addEventListener('change',filterAssignees);filterAssignees()</script>
 {% endblock %}
