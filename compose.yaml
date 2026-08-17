@@ -41,6 +41,24 @@ services:
     depends_on:
       aduan-hub:
         condition: service_healthy
+  email-worker:
+    build: .
+    container_name: aduan-hub-email
+    restart: unless-stopped
+    healthcheck:
+      disable: true
+    command: ["python","email_worker.py"]
+    environment:
+      SECRET_KEY: ${SECRET_KEY:-change-this-in-production}
+      DATABASE_PATH: /data/aduan.db
+      EMAIL_POLL_SECONDS: ${EMAIL_POLL_SECONDS:-60}
+    volumes:
+      - aduan_data:/data
+    networks:
+      - aduan_net
+    depends_on:
+      aduan-hub:
+        condition: service_healthy
 volumes:
   aduan_data:
 networks:

@@ -9,7 +9,7 @@
 <div class="avatar">{{t.contact[0]}}</div>
 <div>
 <b>{{t.contact}}</b>
-<span>{{t.phone}} · {{t.location or tr('Location not provided')}}</span>
+<span>{{t.email if t.channel=='email' else t.phone}} · {{'Email' if t.channel=='email' else 'WhatsApp'}} · {{t.location or tr('Location not provided')}}</span>
 </div>
 <span class="badge {{t.status}}">{{tr(t.status|replace('_',' '))}}</span>
 </div>

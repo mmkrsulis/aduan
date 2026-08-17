@@ -1,4 +1,5 @@
-import os, sqlite3, json, secrets, csv, io, base64, uuid, re, hashlib
+import os, sqlite3, json, secrets, csv, io, base64, uuid, re, hashlib, smtplib, ssl
+from email.message import EmailMessage
 from datetime import datetime, timezone, timedelta
 from functools import wraps
 from flask import Flask, render_template, request, redirect, url_for, session, flash, jsonify, g, Response, send_file, send_from_directory
@@ -6,6 +7,7 @@ from werkzeug.utils import secure_filename
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.middleware.proxy_fix import ProxyFix
 from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
+from cryptography.fernet import Fernet, InvalidToken
 import requests
 import qrcode
 from zoneinfo import ZoneInfo
@@ -26,6 +28,16 @@ ANDROID_APK_PATH = os.getenv("ANDROID_APK_PATH", os.path.join(os.path.dirname(DB
 
 def api_token_version(password_hash):
     return hashlib.sha256((password_hash or "").encode()).hexdigest()[:16]
+
+def credential_cipher():
+    key=base64.urlsafe_b64encode(hashlib.sha256(app.secret_key.encode()).digest())
+    return Fernet(key)
+
+def encrypt_secret(value): return credential_cipher().encrypt((value or "").encode()).decode() if value else None
+def decrypt_secret(value):
+    if not value: return ""
+    try: return credential_cipher().decrypt(value.encode()).decode()
+    except (InvalidToken,ValueError): return ""
 
 def issue_mobile_token(user, device_name="Android"):
     cur=db().execute("INSERT INTO mobile_devices(org_id,user_id,name,platform,last_seen_at) VALUES(?,?,?,?,CURRENT_TIMESTAMP)",(user["org_id"],user["id"],(device_name or "Android")[:80],"android"))
@@ -96,6 +108,8 @@ CREATE TABLE IF NOT EXISTS conversation_states(id INTEGER PRIMARY KEY, org_id IN
 CREATE TABLE IF NOT EXISTS chat_requests(id INTEGER PRIMARY KEY, org_id INTEGER NOT NULL, ticket_id INTEGER NOT NULL, phone TEXT NOT NULL, language TEXT DEFAULT 'id', status TEXT DEFAULT 'pending', expires_at TEXT NOT NULL, approved_by INTEGER, approved_at TEXT, expired_at TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(org_id) REFERENCES organizations(id), FOREIGN KEY(ticket_id) REFERENCES tickets(id) ON DELETE CASCADE, FOREIGN KEY(approved_by) REFERENCES users(id));
 CREATE TABLE IF NOT EXISTS mobile_pairings(id INTEGER PRIMARY KEY, org_id INTEGER NOT NULL, user_id INTEGER NOT NULL, token_hash TEXT UNIQUE NOT NULL, expires_at TEXT NOT NULL, used_at TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(org_id) REFERENCES organizations(id), FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE);
 CREATE TABLE IF NOT EXISTS mobile_devices(id INTEGER PRIMARY KEY, org_id INTEGER NOT NULL, user_id INTEGER NOT NULL, name TEXT NOT NULL, platform TEXT DEFAULT 'android', last_seen_at TEXT, revoked_at TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(org_id) REFERENCES organizations(id), FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE);
+CREATE TABLE IF NOT EXISTS email_configs(id INTEGER PRIMARY KEY, org_id INTEGER UNIQUE NOT NULL, enabled INTEGER DEFAULT 0, address TEXT, sender_name TEXT, imap_host TEXT, imap_port INTEGER DEFAULT 993, imap_security TEXT DEFAULT 'ssl', imap_username TEXT, imap_password TEXT, imap_folder TEXT DEFAULT 'INBOX', smtp_host TEXT, smtp_port INTEGER DEFAULT 587, smtp_security TEXT DEFAULT 'starttls', smtp_username TEXT, smtp_password TEXT, signature TEXT, auto_reply INTEGER DEFAULT 1, last_checked_at TEXT, last_error TEXT, updated_at TEXT DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(org_id) REFERENCES organizations(id));
+CREATE TABLE IF NOT EXISTS email_receipts(id INTEGER PRIMARY KEY, org_id INTEGER NOT NULL, message_id TEXT NOT NULL, ticket_id INTEGER, received_at TEXT DEFAULT CURRENT_TIMESTAMP, UNIQUE(org_id,message_id), FOREIGN KEY(org_id) REFERENCES organizations(id), FOREIGN KEY(ticket_id) REFERENCES tickets(id) ON DELETE SET NULL);
 """
 
 def db():
@@ -119,7 +133,9 @@ def init_db():
     con=sqlite3.connect(DB, timeout=30); con.executescript(SCHEMA)
     migrations={
       "organizations":{"app_name":"TEXT DEFAULT 'AduanHub'","icon":"TEXT","timezone":"TEXT DEFAULT 'Asia/Jakarta'","ticket_prefix":"TEXT DEFAULT 'ADU'","ticket_format":"TEXT DEFAULT '{prefix}-{year}-{number:05d}'","notification_sound":"TEXT","notification_sound_enabled":"INTEGER DEFAULT 1"},
-      "messages":{"attachment_path":"TEXT","attachment_name":"TEXT","attachment_type":"TEXT","delivery_status":"TEXT DEFAULT 'received'"},
+      "contacts":{"email":"TEXT"},
+      "tickets":{"channel":"TEXT DEFAULT 'whatsapp'","email_subject":"TEXT"},
+      "messages":{"attachment_path":"TEXT","attachment_name":"TEXT","attachment_type":"TEXT","delivery_status":"TEXT DEFAULT 'received'","channel":"TEXT DEFAULT 'whatsapp'","external_id":"TEXT"},
       "flow_configs":{"forward_template_id":"TEXT","forward_template_en":"TEXT","status_template_id":"TEXT","status_template_en":"TEXT","unavailable_id":"TEXT","unavailable_en":"TEXT","identity_prompt_id":"TEXT","identity_prompt_en":"TEXT","chat_waiting_id":"TEXT","chat_waiting_en":"TEXT","chat_connected_id":"TEXT","chat_connected_en":"TEXT","chat_timeout_id":"TEXT","chat_timeout_en":"TEXT","menu_items":"TEXT DEFAULT '[]'","ai_enabled":"INTEGER DEFAULT 0","ai_prompt":"TEXT","ai_confidence":"REAL DEFAULT .8","session_timeout_minutes":"INTEGER DEFAULT 30"}
     }
     for table,columns in migrations.items():
@@ -355,7 +371,7 @@ def tickets():
 @app.route("/tickets/<int:tid>",methods=["GET","POST"])
 @login_required
 def ticket(tid):
-    t=db().execute("SELECT t.*,c.name contact,c.phone,c.location FROM tickets t JOIN contacts c ON c.id=t.contact_id WHERE t.id=? AND t.org_id=?",(tid,session["org_id"])).fetchone()
+    t=db().execute("SELECT t.*,c.name contact,c.phone,c.email,c.location FROM tickets t JOIN contacts c ON c.id=t.contact_id WHERE t.id=? AND t.org_id=?",(tid,session["org_id"])).fetchone()
     if not t: return ("Not found",404)
     if not ticket_access(t): return ("Forbidden",403)
     can_reply=t["status"] not in ("resolved","closed") and (is_central_admin() or (session.get("role") in ("supervisor","agent") and bool(t["unit"])))
@@ -381,13 +397,14 @@ def ticket(tid):
                 if internal:
                     db().execute("INSERT INTO messages(ticket_id,direction,body,sender,internal,attachment_path,attachment_name,attachment_type) VALUES(?,?,?,?,1,?,?,?)",(tid,"out",body,session["name"],*(stored or (None,None,None)))); db().execute("UPDATE tickets SET updated_at=CURRENT_TIMESTAMP WHERE id=?",(tid,)); db().commit(); audit("note.added","ticket",tid)
                 else:
-                    if stored:
+                    if t["channel"]=="email": ok,msg=send_ticket_email(t,body,stored)
+                    elif stored:
                         media_url=request.url_root.rstrip("/")+url_for("media_file",filename=stored[0]); ok,msg=send_mpwa_media(t["phone"],media_url,stored[2],body)
                     else: ok,msg=send_mpwa(t["phone"],body)
                     flash(msg,"success" if ok else "error")
                     if ok:
-                        db().execute("INSERT INTO messages(ticket_id,direction,body,sender,internal,attachment_path,attachment_name,attachment_type,delivery_status) VALUES(?,?,?,?,0,?,?,?,'sent')",(tid,"out",body,session["name"],*(stored or (None,None,None)))); db().execute("UPDATE tickets SET updated_at=CURRENT_TIMESTAMP WHERE id=?",(tid,)); db().commit(); audit("reply.sent","ticket",tid)
-                        db().execute("INSERT INTO conversation_states(org_id,phone,step,language,data,human_takeover) VALUES(?,?,?,?,?,1) ON CONFLICT(org_id,phone) DO UPDATE SET step='human_chat',human_takeover=1,updated_at=CURRENT_TIMESTAMP",(session["org_id"],t["phone"],"human_chat",session.get("lang","id"),"{}")); db().commit()
+                        db().execute("INSERT INTO messages(ticket_id,direction,body,sender,internal,attachment_path,attachment_name,attachment_type,delivery_status,channel) VALUES(?,?,?,?,0,?,?,?,'sent',?)",(tid,"out",body,session["name"],*(stored or (None,None,None)),t["channel"] or "whatsapp")); db().execute("UPDATE tickets SET updated_at=CURRENT_TIMESTAMP WHERE id=?",(tid,)); db().commit(); audit("reply.sent","ticket",tid,{"channel":t["channel"]})
+                        if t["channel"]!="email": db().execute("INSERT INTO conversation_states(org_id,phone,step,language,data,human_takeover) VALUES(?,?,?,?,?,1) ON CONFLICT(org_id,phone) DO UPDATE SET step='human_chat',human_takeover=1,updated_at=CURRENT_TIMESTAMP",(session["org_id"],t["phone"],"human_chat",session.get("lang","id"),"{}")); db().commit()
                     else: audit("reply.failed","ticket",tid,{"reason":msg})
         elif action=="forward":
             if not is_central_admin(): return ("Forbidden",403)
@@ -460,6 +477,38 @@ def send_mpwa_for_org(org,phone,body):
 def send_mpwa(phone,body):
     org=db().execute("SELECT * FROM organizations WHERE id=?",(session["org_id"],)).fetchone()
     return send_mpwa_for_org(org,phone,body)
+
+def email_config(org_id): return db().execute("SELECT * FROM email_configs WHERE org_id=?",(org_id,)).fetchone()
+
+def smtp_connect(config):
+    password=decrypt_secret(config["smtp_password"])
+    if config["smtp_security"]=="ssl": server=smtplib.SMTP_SSL(config["smtp_host"],config["smtp_port"],timeout=20,context=ssl.create_default_context())
+    else:
+        server=smtplib.SMTP(config["smtp_host"],config["smtp_port"],timeout=20)
+        if config["smtp_security"]=="starttls": server.starttls(context=ssl.create_default_context())
+    if config["smtp_username"]: server.login(config["smtp_username"],password)
+    return server
+
+def send_ticket_email(ticket_row,body,stored=None):
+    config=email_config(ticket_row["org_id"])
+    recipient=ticket_row["email"] if "email" in ticket_row.keys() else ticket_row["phone"]
+    if not config or not config["enabled"] or not recipient: return False,"Koneksi email belum aktif atau alamat penerima tidak tersedia."
+    message=EmailMessage(); sender_name=config["sender_name"] or config["address"]
+    message["From"]=f'{sender_name} <{config["address"]}>'; message["To"]=recipient
+    original=(ticket_row["email_subject"] or ticket_row["subject"] or "Aduan").strip()
+    message["Subject"]=f'[{ticket_row["code"]}] Re: {re.sub(r"^\s*(re:\s*)+","",original,flags=re.I)}'
+    reference=db().execute("SELECT external_id FROM messages WHERE ticket_id=? AND channel='email' AND external_id IS NOT NULL ORDER BY id DESC LIMIT 1",(ticket_row["id"],)).fetchone()
+    if reference: message["In-Reply-To"]=reference["external_id"]; message["References"]=reference["external_id"]
+    text=(body or "").strip(); signature=(config["signature"] or "").strip()
+    if signature: text+=f"\n\n{signature}"
+    message.set_content(text or "Lampiran terlampir.")
+    if stored:
+        path,name,mime=stored; major,minor=mime.split("/",1)
+        with open(os.path.join(UPLOAD_DIR,path),"rb") as source: message.add_attachment(source.read(),maintype=major,subtype=minor,filename=name)
+    try:
+        with smtp_connect(config) as server: server.send_message(message)
+        return True,"Balasan berhasil dikirim melalui email."
+    except (OSError,smtplib.SMTPException) as e: return False,f"Pengiriman email gagal: {e}"
 
 def send_mpwa_media_for_org(org,phone,url,mime,caption=""):
     base=org["mpwa_url"] or os.getenv("MPWA_BASE_URL",""); key=org["mpwa_key"] or os.getenv("MPWA_API_KEY",""); sender=org["mpwa_sender"] or os.getenv("MPWA_SENDER","")
@@ -538,12 +587,21 @@ def delete_user(uid):
 @roles("owner","admin")
 def settings():
     section=request.args.get("section","general")
-    if section not in ("general","whatsapp","notifications","units","categories"): section="general"
+    if section not in ("general","whatsapp","email","notifications","units","categories"): section="general"
     if request.method=="POST":
         section=request.form.get("section","general")
         org=db().execute("SELECT * FROM organizations WHERE id=?",(session["org_id"],)).fetchone(); logo=org["logo"]; icon=org["icon"]
         if section=="whatsapp":
             db().execute("UPDATE organizations SET mpwa_url=?,mpwa_key=?,mpwa_sender=? WHERE id=?",(request.form.get("mpwa_url","").strip(),request.form.get("mpwa_key","").strip(),request.form.get("mpwa_sender","").strip(),session["org_id"])); db().commit(); audit("organization.mpwa_updated","organization",session["org_id"]); flash("Koneksi WhatsApp berhasil disimpan.","success"); return redirect(url_for("settings",section="whatsapp"))
+        if section=="email":
+            current=email_config(session["org_id"]); imap_password=request.form.get("imap_password",""); smtp_password=request.form.get("smtp_password","")
+            if not imap_password and current: encrypted_imap=current["imap_password"]
+            else: encrypted_imap=encrypt_secret(imap_password)
+            if request.form.get("same_credentials")=="1" and not smtp_password: encrypted_smtp=encrypted_imap
+            elif not smtp_password and current: encrypted_smtp=current["smtp_password"]
+            else: encrypted_smtp=encrypt_secret(smtp_password)
+            values=(1 if request.form.get("enabled") else 0,request.form.get("address","").strip().lower(),request.form.get("sender_name","").strip(),request.form.get("imap_host","").strip(),max(1,min(65535,int(request.form.get("imap_port") or 993))),request.form.get("imap_security","ssl"),request.form.get("imap_username","").strip(),encrypted_imap,request.form.get("imap_folder","INBOX").strip() or "INBOX",request.form.get("smtp_host","").strip(),max(1,min(65535,int(request.form.get("smtp_port") or 587))),request.form.get("smtp_security","starttls"),request.form.get("smtp_username","").strip(),encrypted_smtp,request.form.get("signature","").strip()[:2000],1 if request.form.get("auto_reply") else 0,session["org_id"])
+            db().execute("""INSERT INTO email_configs(enabled,address,sender_name,imap_host,imap_port,imap_security,imap_username,imap_password,imap_folder,smtp_host,smtp_port,smtp_security,smtp_username,smtp_password,signature,auto_reply,org_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(org_id) DO UPDATE SET enabled=excluded.enabled,address=excluded.address,sender_name=excluded.sender_name,imap_host=excluded.imap_host,imap_port=excluded.imap_port,imap_security=excluded.imap_security,imap_username=excluded.imap_username,imap_password=excluded.imap_password,imap_folder=excluded.imap_folder,smtp_host=excluded.smtp_host,smtp_port=excluded.smtp_port,smtp_security=excluded.smtp_security,smtp_username=excluded.smtp_username,smtp_password=excluded.smtp_password,signature=excluded.signature,auto_reply=excluded.auto_reply,updated_at=CURRENT_TIMESTAMP""",values); db().commit(); audit("organization.email_updated","organization",session["org_id"]); flash("Koneksi email berhasil disimpan.","success"); return redirect(url_for("settings",section="email"))
         if section=="notifications":
             sound=org["notification_sound"]
             try:
@@ -559,7 +617,26 @@ def settings():
         try: ticket_format.format_map({"prefix":prefix,"year":2026,"month":"08","day":"13","number":1})
         except (KeyError,ValueError): flash("Format nomor aduan tidak valid.","error"); return redirect(url_for("settings",section="general"))
         db().execute("UPDATE organizations SET name=?,app_name=?,accent=?,terminology=?,timezone=?,ticket_prefix=?,ticket_format=?,logo=?,icon=? WHERE id=?",(request.form["name"],request.form.get("app_name","AduanHub").strip()[:60] or "AduanHub",request.form["accent"],request.form["terminology"],request.form.get("timezone","Asia/Jakarta"),prefix,ticket_format,logo,icon,session["org_id"])); db().commit(); session["org_name"]=request.form["name"]; audit("organization.updated","organization",session["org_id"]); flash("Pengaturan berhasil disimpan","success")
-    org=db().execute("SELECT * FROM organizations WHERE id=?",(session["org_id"],)).fetchone(); units=db().execute("SELECT * FROM units WHERE org_id=? ORDER BY name",(session["org_id"],)).fetchall(); categories=db().execute("SELECT c.*,(SELECT count(*) FROM tickets t WHERE t.org_id=c.org_id AND t.category=c.name) usage_count FROM categories c WHERE c.org_id=? ORDER BY c.name",(session["org_id"],)).fetchall(); return render_template("settings.html",org=org,units=units,categories=categories,section=section)
+    org=db().execute("SELECT * FROM organizations WHERE id=?",(session["org_id"],)).fetchone(); units=db().execute("SELECT * FROM units WHERE org_id=? ORDER BY name",(session["org_id"],)).fetchall(); categories=db().execute("SELECT c.*,(SELECT count(*) FROM tickets t WHERE t.org_id=c.org_id AND t.category=c.name) usage_count FROM categories c WHERE c.org_id=? ORDER BY c.name",(session["org_id"],)).fetchall(); return render_template("settings.html",org=org,email=email_config(session["org_id"]),units=units,categories=categories,section=section)
+
+@app.post("/settings/email/test")
+@login_required
+@roles("owner","admin")
+def test_email_connection():
+    config=email_config(session["org_id"])
+    if not config: flash("Simpan konfigurasi email terlebih dahulu.","error"); return redirect(url_for("settings",section="email"))
+    import imaplib
+    try:
+        if config["imap_security"]=="ssl": client=imaplib.IMAP4_SSL(config["imap_host"],config["imap_port"],ssl_context=ssl.create_default_context(),timeout=20)
+        else:
+            client=imaplib.IMAP4(config["imap_host"],config["imap_port"],timeout=20)
+            if config["imap_security"]=="starttls": client.starttls(ssl_context=ssl.create_default_context())
+        client.login(config["imap_username"],decrypt_secret(config["imap_password"])); client.select(config["imap_folder"] or "INBOX",readonly=True); client.logout()
+        with smtp_connect(config) as server: server.noop()
+        db().execute("UPDATE email_configs SET last_error=NULL WHERE org_id=?",(session["org_id"],)); db().commit(); flash("Koneksi IMAP dan SMTP berhasil.","success")
+    except Exception as e:
+        message=str(e)[:300]; db().execute("UPDATE email_configs SET last_error=? WHERE org_id=?",(message,session["org_id"])); db().commit(); flash(f"Uji koneksi gagal: {message}","error")
+    return redirect(url_for("settings",section="email"))
 
 @app.post("/categories")
 @login_required
