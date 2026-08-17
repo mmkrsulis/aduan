@@ -320,7 +320,7 @@ def dashboard():
 def download_android():
     if not os.path.isfile(ANDROID_APK_PATH):
         return ("Android application is not available.", 404)
-    return send_file(ANDROID_APK_PATH, mimetype="application/vnd.android.package-archive", as_attachment=True, download_name="AduanHub-1.0.0.apk")
+    return send_file(ANDROID_APK_PATH, mimetype="application/vnd.android.package-archive", as_attachment=True, download_name="AduanHub-1.1.0.apk")
 
 @app.get("/mobile/connect")
 @login_required
