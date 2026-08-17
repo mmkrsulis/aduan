@@ -1,0 +1,22 @@
+{% extends 'base.html' %}
+{% block title %}Hubungkan aplikasi · {{brand.app_name or 'AduanHub'}}{% endblock %}
+{% block heading %}Hubungkan aplikasi{% endblock %}
+{% block subheading %}Masuk ke aplikasi Android tanpa mengetik alamat server atau kata sandi{% endblock %}
+{% block content %}
+<div class="pairing-layout">
+  <section class="panel pairing-card">
+    <span class="eyebrow">QR SEKALI PAKAI</span>
+    <h2>Pindai dari aplikasi Android</h2>
+    <p>Buka aplikasi, pilih <b>Pindai QR dari dashboard</b>, lalu arahkan kamera ke kode ini.</p>
+    <div class="pairing-qr"><img src="{{qr}}" alt="QR untuk menghubungkan aplikasi"></div>
+    <div class="pairing-expiry">Berlaku <b id="pairing-countdown">02:00</b> · hanya dapat digunakan satu kali</div>
+    <a class="secondary" href="{{url_for('mobile_connect')}}">Buat QR baru</a>
+  </section>
+  <section class="panel pairing-devices">
+    <span class="eyebrow">PERANGKAT TERHUBUNG</span><h2>Kelola akses aplikasi</h2>
+    <p>Cabut perangkat yang hilang, berganti pemilik, atau tidak lagi digunakan.</p>
+    {% for d in devices %}<div class="device-row"><div><b>{{d.name}}</b><small>{{d.user_name}} · terakhir aktif {{d.last_seen_at or 'belum ada aktivitas'}}</small></div><form method="post" action="{{url_for('mobile_device_revoke',device_id=d.id)}}"><input type="hidden" name="csrf_token" value="{{csrf_token()}}"><button class="danger" type="submit">Cabut</button></form></div>{% else %}<div class="empty">Belum ada perangkat yang terhubung.</div>{% endfor %}
+  </section>
+</div>
+<script>let s=120,e=document.getElementById('pairing-countdown');setInterval(()=>{if(s>0)s--;e.textContent=String(Math.floor(s/60)).padStart(2,'0')+':'+String(s%60).padStart(2,'0');if(!s)e.parentElement.textContent='QR kedaluwarsa · buat QR baru';},1000);</script>
+{% endblock %}

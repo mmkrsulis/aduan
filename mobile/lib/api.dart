@@ -1,7 +1,7 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 
-const apiBase = String.fromEnvironment(
+const defaultApiBase = String.fromEnvironment(
   'API_BASE_URL',
   defaultValue: 'https://aduanhub.rekadev.site/api/v1',
 );
@@ -16,7 +16,8 @@ class ApiException implements Exception {
 
 class ApiClient {
   String? token;
-  ApiClient([this.token]);
+  final String baseUrl;
+  ApiClient([this.token, this.baseUrl = defaultApiBase]);
 
   Map<String, String> get headers => {
     'Accept': 'application/json',
@@ -39,9 +40,13 @@ class ApiClient {
 
   Future<Map<String, dynamic>> login(String email, String password) async {
     final response = await http.post(
-      Uri.parse('$apiBase/auth/login'),
+      Uri.parse('$baseUrl/auth/login'),
       headers: headers,
-      body: jsonEncode({'email': email, 'password': password}),
+      body: jsonEncode({
+        'email': email,
+        'password': password,
+        'device_name': 'Android',
+      }),
     );
     return _decode(response);
   }
@@ -50,7 +55,7 @@ class ApiClient {
     String path, [
     Map<String, String>? query,
   ]) async {
-    final uri = Uri.parse('$apiBase$path').replace(queryParameters: query);
+    final uri = Uri.parse('$baseUrl$path').replace(queryParameters: query);
     return _decode(await http.get(uri, headers: headers));
   }
 
@@ -60,7 +65,7 @@ class ApiClient {
   ) async {
     return _decode(
       await http.post(
-        Uri.parse('$apiBase$path'),
+        Uri.parse('$baseUrl$path'),
         headers: headers,
         body: jsonEncode(body),
       ),
@@ -78,7 +83,7 @@ class ApiClient {
     final request =
         http.MultipartRequest(
             'POST',
-            Uri.parse('$apiBase/tickets/$ticketId/reply'),
+            Uri.parse('$baseUrl/tickets/$ticketId/reply'),
           )
           ..headers['Authorization'] = 'Bearer $token'
           ..fields['body'] = body

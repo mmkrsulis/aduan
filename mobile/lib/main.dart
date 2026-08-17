@@ -1,8 +1,10 @@
 import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:intl/intl.dart';
+import 'package:mobile_scanner/mobile_scanner.dart';
 import 'api.dart';
 
 const storage = FlutterSecureStorage();
@@ -29,8 +31,9 @@ class _AduanHubAppState extends State<AduanHubApp> {
 
   Future<void> restore() async {
     final token = await storage.read(key: 'token');
+    final baseUrl = await storage.read(key: 'api_base_url') ?? defaultApiBase;
     if (token != null) {
-      final client = ApiClient(token);
+      final client = ApiClient(token, baseUrl);
       try {
         profile = await client.get('/me');
         api = client;
@@ -41,10 +44,13 @@ class _AduanHubAppState extends State<AduanHubApp> {
     if (mounted) setState(() => loading = false);
   }
 
-  Future<void> signedIn(Map<String, dynamic> result) async {
+  Future<void> signedIn(Map<String, dynamic> result, [String? baseUrl]) async {
     final token = result['token'] as String;
     await storage.write(key: 'token', value: token);
-    final client = ApiClient(token);
+    final resolvedBase =
+        baseUrl ?? await storage.read(key: 'api_base_url') ?? defaultApiBase;
+    await storage.write(key: 'api_base_url', value: resolvedBase);
+    final client = ApiClient(token, resolvedBase);
     final me = await client.get('/me');
     setState(() {
       api = client;
@@ -53,7 +59,7 @@ class _AduanHubAppState extends State<AduanHubApp> {
   }
 
   Future<void> signOut() async {
-    await storage.deleteAll();
+    await storage.delete(key: 'token');
     setState(() {
       api = null;
       profile = null;
@@ -137,8 +143,62 @@ class SplashScreen extends StatelessWidget {
       const Scaffold(body: Center(child: CircularProgressIndicator()));
 }
 
+class PairingScanner extends StatefulWidget {
+  const PairingScanner({super.key});
+  @override
+  State<PairingScanner> createState() => _PairingScannerState();
+}
+
+class _PairingScannerState extends State<PairingScanner> {
+  bool found = false;
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    appBar: AppBar(title: const Text('Pindai QR dashboard')),
+    body: Stack(
+      fit: StackFit.expand,
+      children: [
+        MobileScanner(
+          onDetect: (capture) {
+            if (found || capture.barcodes.isEmpty) return;
+            final raw = capture.barcodes.first.rawValue;
+            if (raw == null) return;
+            found = true;
+            Navigator.pop(context, raw);
+          },
+        ),
+        IgnorePointer(
+          child: Center(
+            child: Container(
+              width: 260,
+              height: 260,
+              decoration: BoxDecoration(
+                border: Border.all(color: Colors.white, width: 3),
+                borderRadius: BorderRadius.circular(24),
+              ),
+            ),
+          ),
+        ),
+        const Positioned(
+          left: 24,
+          right: 24,
+          bottom: 42,
+          child: Card(
+            child: Padding(
+              padding: EdgeInsets.all(16),
+              child: Text(
+                'Arahkan kamera ke QR “Hubungkan aplikasi” di dashboard.',
+                textAlign: TextAlign.center,
+              ),
+            ),
+          ),
+        ),
+      ],
+    ),
+  );
+}
+
 class LoginScreen extends StatefulWidget {
-  final Future<void> Function(Map<String, dynamic>) onSignedIn;
+  final Future<void> Function(Map<String, dynamic>, [String?]) onSignedIn;
   const LoginScreen({super.key, required this.onSignedIn});
   @override
   State<LoginScreen> createState() => _LoginScreenState();
@@ -149,6 +209,41 @@ class _LoginScreenState extends State<LoginScreen> {
   final password = TextEditingController();
   bool busy = false, hidden = true;
   String? error;
+  Future<void> scan() async {
+    final value = await Navigator.of(
+      context,
+    ).push<String>(MaterialPageRoute(builder: (_) => const PairingScanner()));
+    if (value == null || !mounted) return;
+    setState(() {
+      busy = true;
+      error = null;
+    });
+    try {
+      final payload = jsonDecode(value) as Map<String, dynamic>;
+      final server = (payload['server'] ?? '').toString().replaceAll(
+        RegExp(r'/+$'),
+        '',
+      );
+      final token = (payload['token'] ?? '').toString();
+      if (payload['v'] != 1 ||
+          !Uri.parse(server).isScheme('https') ||
+          token.isEmpty)
+        throw const FormatException();
+      final base = '$server/api/v1';
+      final result = await ApiClient(
+        null,
+        base,
+      ).post('/auth/pair', {'token': token, 'device_name': 'Android'});
+      await widget.onSignedIn(result, base);
+    } on ApiException catch (e) {
+      setState(() => error = e.message);
+    } catch (_) {
+      setState(() => error = 'QR tidak valid atau tidak dapat dihubungi.');
+    } finally {
+      if (mounted) setState(() => busy = false);
+    }
+  }
+
   Future<void> submit() async {
     if (email.text.trim().isEmpty || password.text.isEmpty) return;
     setState(() {
@@ -204,6 +299,28 @@ class _LoginScreenState extends State<LoginScreen> {
                   ),
                 ),
                 const SizedBox(height: 32),
+                SizedBox(
+                  width: double.infinity,
+                  height: 54,
+                  child: FilledButton.icon(
+                    onPressed: busy ? null : scan,
+                    icon: const Icon(Icons.qr_code_scanner),
+                    label: const Text('Pindai QR dari dashboard'),
+                  ),
+                ),
+                const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 22),
+                  child: Row(
+                    children: [
+                      Expanded(child: Divider()),
+                      Padding(
+                        padding: EdgeInsets.symmetric(horizontal: 14),
+                        child: Text('atau masuk manual'),
+                      ),
+                      Expanded(child: Divider()),
+                    ],
+                  ),
+                ),
                 TextField(
                   controller: email,
                   keyboardType: TextInputType.emailAddress,

@@ -7,6 +7,7 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.middleware.proxy_fix import ProxyFix
 from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
 import requests
+import qrcode
 from zoneinfo import ZoneInfo
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4, landscape
@@ -25,6 +26,11 @@ ANDROID_APK_PATH = os.getenv("ANDROID_APK_PATH", os.path.join(os.path.dirname(DB
 
 def api_token_version(password_hash):
     return hashlib.sha256((password_hash or "").encode()).hexdigest()[:16]
+
+def issue_mobile_token(user, device_name="Android"):
+    cur=db().execute("INSERT INTO mobile_devices(org_id,user_id,name,platform,last_seen_at) VALUES(?,?,?,?,CURRENT_TIMESTAMP)",(user["org_id"],user["id"],(device_name or "Android")[:80],"android"))
+    did=cur.lastrowid
+    return api_tokens.dumps({"uid":user["id"],"did":did,"v":api_token_version(user["password"])})
 
 ID = {
  "Overview":"Ringkasan","Service intelligence at a glance":"Ringkasan kinerja layanan",
@@ -88,6 +94,8 @@ CREATE TABLE IF NOT EXISTS notifications(id INTEGER PRIMARY KEY, org_id INTEGER 
 CREATE TABLE IF NOT EXISTS flow_configs(id INTEGER PRIMARY KEY, org_id INTEGER UNIQUE NOT NULL, enabled INTEGER DEFAULT 1, default_language TEXT DEFAULT 'id', welcome_id TEXT, welcome_en TEXT, service_info_id TEXT, service_info_en TEXT, confirmation_id TEXT, confirmation_en TEXT, completion_id TEXT, completion_en TEXT, forward_template_id TEXT, forward_template_en TEXT, status_template_id TEXT, status_template_en TEXT, unavailable_id TEXT, unavailable_en TEXT, menu_items TEXT DEFAULT '[]', ai_enabled INTEGER DEFAULT 0, ai_prompt TEXT, ai_confidence REAL DEFAULT .8, session_timeout_minutes INTEGER DEFAULT 30, office_hours TEXT DEFAULT 'Monday-Friday, 08:00-16:00', updated_at TEXT DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(org_id) REFERENCES organizations(id));
 CREATE TABLE IF NOT EXISTS conversation_states(id INTEGER PRIMARY KEY, org_id INTEGER NOT NULL, phone TEXT NOT NULL, step TEXT NOT NULL DEFAULT 'menu', language TEXT DEFAULT 'id', data TEXT DEFAULT '{}', human_takeover INTEGER DEFAULT 0, updated_at TEXT DEFAULT CURRENT_TIMESTAMP, UNIQUE(org_id,phone), FOREIGN KEY(org_id) REFERENCES organizations(id));
 CREATE TABLE IF NOT EXISTS chat_requests(id INTEGER PRIMARY KEY, org_id INTEGER NOT NULL, ticket_id INTEGER NOT NULL, phone TEXT NOT NULL, language TEXT DEFAULT 'id', status TEXT DEFAULT 'pending', expires_at TEXT NOT NULL, approved_by INTEGER, approved_at TEXT, expired_at TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(org_id) REFERENCES organizations(id), FOREIGN KEY(ticket_id) REFERENCES tickets(id) ON DELETE CASCADE, FOREIGN KEY(approved_by) REFERENCES users(id));
+CREATE TABLE IF NOT EXISTS mobile_pairings(id INTEGER PRIMARY KEY, org_id INTEGER NOT NULL, user_id INTEGER NOT NULL, token_hash TEXT UNIQUE NOT NULL, expires_at TEXT NOT NULL, used_at TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(org_id) REFERENCES organizations(id), FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE);
+CREATE TABLE IF NOT EXISTS mobile_devices(id INTEGER PRIMARY KEY, org_id INTEGER NOT NULL, user_id INTEGER NOT NULL, name TEXT NOT NULL, platform TEXT DEFAULT 'android', last_seen_at TEXT, revoked_at TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(org_id) REFERENCES organizations(id), FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE);
 """
 
 def db():
@@ -313,6 +321,27 @@ def download_android():
     if not os.path.isfile(ANDROID_APK_PATH):
         return ("Android application is not available.", 404)
     return send_file(ANDROID_APK_PATH, mimetype="application/vnd.android.package-archive", as_attachment=True, download_name="AduanHub-1.0.0.apk")
+
+@app.get("/mobile/connect")
+@login_required
+def mobile_connect():
+    raw=secrets.token_urlsafe(32); digest=hashlib.sha256(raw.encode()).hexdigest()
+    db().execute("UPDATE mobile_pairings SET used_at=CURRENT_TIMESTAMP WHERE user_id=? AND used_at IS NULL",(session["uid"],))
+    cur=db().execute("INSERT INTO mobile_pairings(org_id,user_id,token_hash,expires_at) VALUES(?,?,?,datetime('now','+2 minutes'))",(session["org_id"],session["uid"],digest))
+    pairing_id=cur.lastrowid; db().commit()
+    payload=json.dumps({"v":1,"server":request.url_root.rstrip("/"),"token":raw},separators=(",",":"))
+    image=qrcode.make(payload); output=io.BytesIO(); image.save(output,format="PNG")
+    qr="data:image/png;base64,"+base64.b64encode(output.getvalue()).decode()
+    devices=db().execute("SELECT d.*,u.name user_name FROM mobile_devices d JOIN users u ON u.id=d.user_id WHERE d.org_id=? AND d.revoked_at IS NULL AND (? IN ('owner','admin') OR d.user_id=?) ORDER BY d.created_at DESC",(session["org_id"],session["role"],session["uid"])).fetchall()
+    return render_template("mobile_connect.html",qr=qr,pairing_id=pairing_id,devices=devices)
+
+@app.post("/mobile/devices/<int:device_id>/revoke")
+@login_required
+def mobile_device_revoke(device_id):
+    device=db().execute("SELECT * FROM mobile_devices WHERE id=? AND org_id=?",(device_id,session["org_id"])).fetchone()
+    if not device or (session["role"] not in ("owner","admin") and device["user_id"]!=session["uid"]): return ("Not found",404)
+    db().execute("UPDATE mobile_devices SET revoked_at=CURRENT_TIMESTAMP WHERE id=?",(device_id,)); db().commit(); flash("Akses perangkat dicabut","success")
+    return redirect(url_for("mobile_connect"))
 
 @app.route("/tickets")
 @login_required
@@ -773,6 +802,10 @@ def api_auth(fn):
         except BadSignature: return jsonify(error="invalid_token"),401
         user=db().execute("SELECT u.*,o.name org_name,o.app_name,o.logo,o.icon,o.accent,o.terminology,o.timezone FROM users u JOIN organizations o ON o.id=u.org_id WHERE u.id=? AND u.active=1",(payload.get("uid"),)).fetchone()
         if not user or payload.get("v")!=api_token_version(user["password"]): return jsonify(error="invalid_token"),401
+        if payload.get("did"):
+            device=db().execute("SELECT id FROM mobile_devices WHERE id=? AND user_id=? AND revoked_at IS NULL",(payload["did"],user["id"])).fetchone()
+            if not device: return jsonify(error="device_revoked",message="Akses perangkat ini telah dicabut."),401
+            db().execute("UPDATE mobile_devices SET last_seen_at=CURRENT_TIMESTAMP WHERE id=?",(payload["did"],)); db().commit()
         g.api_user=user
         return fn(*args,**kwargs)
     return inner
@@ -790,7 +823,23 @@ def api_login():
     body=request.get_json(silent=True) or {}; email=str(body.get("email","")).strip().lower(); password=str(body.get("password", ""))
     user=db().execute("SELECT u.*,o.name org_name,o.app_name,o.logo,o.icon,o.accent,o.terminology FROM users u JOIN organizations o ON o.id=u.org_id WHERE u.email=? AND u.active=1",(email,)).fetchone()
     if not user or not check_password_hash(user["password"],password): return jsonify(error="invalid_credentials",message="Email atau kata sandi tidak sesuai."),401
-    token=api_tokens.dumps({"uid":user["id"],"v":api_token_version(user["password"])}); db().execute("UPDATE users SET last_login=CURRENT_TIMESTAMP WHERE id=?",(user["id"],)); db().commit()
+    token=issue_mobile_token(user,str(body.get("device_name") or "Android")); db().execute("UPDATE users SET last_login=CURRENT_TIMESTAMP WHERE id=?",(user["id"],)); db().commit()
+    return jsonify(token=token,user={"id":user["id"],"name":user["name"],"email":user["email"],"role":user["role"],"unit":user["unit"] or ""},organization={"name":user["org_name"],"app_name":user["app_name"],"accent":user["accent"],"logo":url_for("media_file",filename=user["logo"],_external=True) if user["logo"] else None})
+
+@app.post("/api/v1/auth/pair")
+def api_pair():
+    body=request.get_json(silent=True) or {}; raw=str(body.get("token") or "")
+    if not raw: return jsonify(error="invalid_pairing",message="QR tidak valid."),400
+    digest=hashlib.sha256(raw.encode()).hexdigest(); con=db()
+    try:
+        con.execute("BEGIN IMMEDIATE")
+        pairing=con.execute("SELECT * FROM mobile_pairings WHERE token_hash=? AND used_at IS NULL AND expires_at>CURRENT_TIMESTAMP",(digest,)).fetchone()
+        if not pairing: con.rollback(); return jsonify(error="pairing_expired",message="QR sudah digunakan atau kedaluwarsa. Buat QR baru dari dashboard."),410
+        user=con.execute("SELECT u.*,o.name org_name,o.app_name,o.logo,o.icon,o.accent,o.terminology FROM users u JOIN organizations o ON o.id=u.org_id WHERE u.id=? AND u.active=1",(pairing["user_id"],)).fetchone()
+        if not user: con.rollback(); return jsonify(error="invalid_pairing"),401
+        con.execute("UPDATE mobile_pairings SET used_at=CURRENT_TIMESTAMP WHERE id=?",(pairing["id"],))
+        token=issue_mobile_token(user,str(body.get("device_name") or "Android")); con.execute("UPDATE users SET last_login=CURRENT_TIMESTAMP WHERE id=?",(user["id"],)); con.commit()
+    except Exception: con.rollback(); raise
     return jsonify(token=token,user={"id":user["id"],"name":user["name"],"email":user["email"],"role":user["role"],"unit":user["unit"] or ""},organization={"name":user["org_name"],"app_name":user["app_name"],"accent":user["accent"],"logo":url_for("media_file",filename=user["logo"],_external=True) if user["logo"] else None})
 
 @app.get("/api/v1/me")
