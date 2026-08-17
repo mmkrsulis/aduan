@@ -1,1 +1,27 @@
-{% extends 'base.html' %}{% block content %}<div class="metrics"><div class="metric"><span data-icon="inbox"></span><p>{{tr('All complaints')}}</p><strong>{{stats.all}}</strong><small>{{tr('Across every channel')}}</small></div><div class="metric"><span data-icon="spark"></span><p>{{tr('New intake')}}</p><strong>{{stats.new}}</strong><small>{{tr('Needs triage')}}</small></div><div class="metric"><span data-icon="clock"></span><p>{{tr('In progress')}}</p><strong>{{stats.in_progress}}</strong><small>{{tr('Being handled')}}</small></div><div class="metric"><span data-icon="check"></span><p>{{tr('Resolved')}}</p><strong>{{stats.resolved}}</strong><small>{{tr('Completed cases')}}</small></div></div><div class="grid-main"><div class="panel"><div class="panel-head"><div><h3>{{tr('Recent complaints')}}</h3><p>{{tr('Latest conversations requiring attention')}}</p></div><a class="text-link" href="{{url_for('tickets')}}">{{tr('View all')}} →</a></div>{% include '_ticket_table.html' %}</div><div class="panel"><div class="panel-head"><div><h3>{{tr('Category overview')}}</h3><p>{{tr('Current intake distribution')}}</p></div></div><div class="categories">{% for c in cats %}<div><span>{{c.category}}</span><b>{{c.n}}</b><i style="--w:{{[c.n*20,100]|min}}%"></i></div>{% endfor %}</div></div></div>{% endblock %}
+{% extends 'base.html' %}
+{% block content %}
+<div class="metrics">
+  <div class="metric"><span data-icon="inbox"></span><p>{{tr('All complaints')}}</p><strong>{{stats.all}}</strong><small>{{tr('Across every channel')}}</small></div>
+  <div class="metric"><span data-icon="spark"></span><p>{{tr('New intake')}}</p><strong>{{stats.new}}</strong><small>{{tr('Needs triage')}}</small></div>
+  <div class="metric"><span data-icon="clock"></span><p>{{tr('In progress')}}</p><strong>{{stats.in_progress}}</strong><small>{{tr('Being handled')}}</small></div>
+  <div class="metric"><span data-icon="check"></span><p>{{tr('Resolved')}}</p><strong>{{stats.resolved}}</strong><small>{{tr('Completed cases')}}</small></div>
+</div>
+<div class="grid-main">
+  <div class="panel">
+    <div class="panel-head"><div><h3>{{tr('Recent complaints')}}</h3><p>{{tr('Latest conversations requiring attention')}}</p></div><a class="text-link" href="{{url_for('tickets')}}">{{tr('View all')}} →</a></div>
+    {% include '_ticket_table.html' %}
+  </div>
+  <div class="dashboard-side">
+    <div class="panel">
+      <div class="panel-head"><div><h3>{{tr('Category overview')}}</h3><p>{{tr('Current intake distribution')}}</p></div></div>
+      <div class="categories">{% for c in cats %}<div><span>{{c.category}}</span><b>{{c.n}}</b><i style="--w:{{[c.n*20,100]|min}}%"></i></div>{% endfor %}</div>
+    </div>
+    <div class="panel android-download">
+      <div class="android-mark" aria-hidden="true">A</div>
+      <div><span class="eyebrow">ANDROID APP · V1.0.0</span><h3>{{'Aplikasi petugas' if lang=='id' else 'Officer application'}}</h3><p>{{'Kelola, disposisikan, dan balas aduan langsung dari perangkat Android.' if lang=='id' else 'Manage, assign, and reply to complaints directly from an Android device.'}}</p></div>
+      <a class="primary download-button" href="{{url_for('download_android')}}">↓ {{'Unduh APK' if lang=='id' else 'Download APK'}} <small>49.8 MB</small></a>
+      <small class="download-hint">{{'Android 5.0 atau lebih baru · Unduhan resmi' if lang=='id' else 'Android 5.0 or newer · Official download'}}</small>
+    </div>
+  </div>
+</div>
+{% endblock %}

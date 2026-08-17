@@ -21,6 +21,7 @@ api_tokens=URLSafeTimedSerializer(app.secret_key,salt="aduanhub-mobile-v1")
 DB = os.getenv("DATABASE_PATH", os.path.join(os.path.dirname(__file__), "aduan.db"))
 UPLOAD_DIR = os.getenv("UPLOAD_DIR", os.path.join(os.path.dirname(DB), "uploads"))
 ALLOWED_MEDIA = {"image/jpeg":"jpg","image/png":"png","image/webp":"webp","video/mp4":"mp4","audio/mpeg":"mp3","audio/ogg":"ogg","application/pdf":"pdf"}
+ANDROID_APK_PATH = os.getenv("ANDROID_APK_PATH", os.path.join(os.path.dirname(DB), "releases", "AduanHub.apk"))
 
 def api_token_version(password_hash):
     return hashlib.sha256((password_hash or "").encode()).hexdigest()[:16]
@@ -305,6 +306,13 @@ def dashboard():
     tickets=db().execute(f"SELECT t.*,c.name contact,c.phone,u.name assignee FROM tickets t JOIN contacts c ON c.id=t.contact_id LEFT JOIN users u ON u.id=t.assignee_id WHERE {base} ORDER BY t.updated_at DESC LIMIT 8",[oid,*scope_params]).fetchall()
     cats=db().execute(f"SELECT t.category,count(*) n FROM tickets t WHERE {base} GROUP BY t.category ORDER BY n DESC",[oid,*scope_params]).fetchall()
     return render_template("dashboard.html",stats=stats,tickets=tickets,cats=cats)
+
+@app.get("/download/android")
+@login_required
+def download_android():
+    if not os.path.isfile(ANDROID_APK_PATH):
+        return ("Android application is not available.", 404)
+    return send_file(ANDROID_APK_PATH, mimetype="application/vnd.android.package-archive", as_attachment=True, download_name="AduanHub-1.0.0.apk")
 
 @app.route("/tickets")
 @login_required
