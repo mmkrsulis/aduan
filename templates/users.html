@@ -1,5 +1,5 @@
 {% extends 'base.html' %}{% block title %}{{'Pengguna' if lang=='id' else 'Users'}} · {{brand.app_name or 'AduanHub'}}{% endblock %}{% block heading %}{{'Manajemen pengguna' if lang=='id' else 'User management'}}{% endblock %}{% block subheading %}{{'Kelola akses, peran, unit, dan keamanan akun' if lang=='id' else 'Manage access, roles, units, and security'}}{% endblock %}{% block content %}<div class="users-layout">
-<section class="panel">
+<section class="panel" id="user-list">
 <div class="panel-head">
 <div>
 <h3>{{'Pengguna workspace' if lang=='id' else 'Workspace users'}}</h3>
@@ -54,7 +54,7 @@
 </form>
 </dialog>{% endfor %}</div>
 </section>
-<form method="post" class="panel user-create">
+<form method="post" class="panel user-create" id="add-user">
 <div class="panel-head">
 <div>
 <h3>{{'Tambah pengguna' if lang=='id' else 'Add user'}}</h3>

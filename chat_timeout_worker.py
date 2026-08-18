@@ -1,4 +1,5 @@
 import os
+import json
 import sqlite3
 import time
 
@@ -42,9 +43,29 @@ def process_one():
         return True
     finally: con.close()
 
+def process_idle_one():
+    con=sqlite3.connect(DB,timeout=30); con.row_factory=sqlite3.Row; con.execute("PRAGMA busy_timeout=30000")
+    try:
+        con.execute("BEGIN IMMEDIATE")
+        state=con.execute("""SELECT s.*,f.idle_minutes,f.idle_message_id,f.idle_message_en FROM conversation_states s JOIN flow_configs f ON f.org_id=s.org_id WHERE s.human_takeover=1 AND f.idle_enabled=1 AND f.idle_minutes>=5 AND s.updated_at<=datetime('now','-' || f.idle_minutes || ' minutes') ORDER BY s.updated_at LIMIT 1""").fetchone()
+        if not state: con.commit(); return False
+        changed=con.execute("UPDATE conversation_states SET step='idle_processing' WHERE id=? AND updated_at=?",(state["id"],state["updated_at"])).rowcount; con.commit()
+        if not changed: return True
+        org=con.execute("SELECT * FROM organizations WHERE id=?",(state["org_id"],)).fetchone(); message=state["idle_message_id" if state["language"]=="id" else "idle_message_en"]
+        if not message or not send(org,state["phone"],message):
+            con.execute("UPDATE conversation_states SET step=? WHERE id=? AND step='idle_processing'",(state["step"],state["id"])); con.commit(); return True
+        try: ticket_id=int(json.loads(state["data"] or "{}").get("ticket_id") or 0)
+        except (ValueError,TypeError,AttributeError): ticket_id=0
+        if not ticket_id:
+            ticket=con.execute("SELECT t.id FROM tickets t JOIN contacts c ON c.id=t.contact_id WHERE t.org_id=? AND c.phone=? ORDER BY t.updated_at DESC LIMIT 1",(state["org_id"],state["phone"])).fetchone(); ticket_id=ticket["id"] if ticket else 0
+        if ticket_id: con.execute("INSERT INTO messages(ticket_id,direction,body,sender,delivery_status) VALUES(?,?,?,?,?)",(ticket_id,"out",message,"Sistem","sent"))
+        con.execute("UPDATE conversation_states SET step='identity',human_takeover=0,data='{}',updated_at=CURRENT_TIMESTAMP WHERE id=? AND step='idle_processing'",(state["id"],)); con.commit(); return True
+    finally: con.close()
+
 if __name__=="__main__":
     while True:
         try:
             while process_one(): pass
+            while process_idle_one(): pass
         except (sqlite3.Error,KeyError,TypeError): pass
         time.sleep(10)

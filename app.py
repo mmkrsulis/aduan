@@ -104,6 +104,7 @@ CREATE TABLE IF NOT EXISTS messages(id INTEGER PRIMARY KEY, ticket_id INTEGER NO
 CREATE TABLE IF NOT EXISTS audit_logs(id INTEGER PRIMARY KEY, org_id INTEGER NOT NULL, user_id INTEGER, action TEXT NOT NULL, entity TEXT, entity_id INTEGER, metadata TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS units(id INTEGER PRIMARY KEY, org_id INTEGER NOT NULL, name TEXT NOT NULL, officer_name TEXT, officer_phone TEXT, active INTEGER DEFAULT 1, created_at TEXT DEFAULT CURRENT_TIMESTAMP, UNIQUE(org_id,name), FOREIGN KEY(org_id) REFERENCES organizations(id));
 CREATE TABLE IF NOT EXISTS categories(id INTEGER PRIMARY KEY, org_id INTEGER NOT NULL, name TEXT NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP, UNIQUE(org_id,name), FOREIGN KEY(org_id) REFERENCES organizations(id));
+CREATE TABLE IF NOT EXISTS quick_replies(id INTEGER PRIMARY KEY, org_id INTEGER NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL, position INTEGER DEFAULT 0, created_at TEXT DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(org_id) REFERENCES organizations(id) ON DELETE CASCADE);
 CREATE TABLE IF NOT EXISTS notifications(id INTEGER PRIMARY KEY, org_id INTEGER NOT NULL, user_id INTEGER, ticket_id INTEGER, title TEXT NOT NULL, body TEXT, read_at TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(org_id) REFERENCES organizations(id), FOREIGN KEY(user_id) REFERENCES users(id), FOREIGN KEY(ticket_id) REFERENCES tickets(id));
 CREATE TABLE IF NOT EXISTS flow_configs(id INTEGER PRIMARY KEY, org_id INTEGER UNIQUE NOT NULL, enabled INTEGER DEFAULT 1, default_language TEXT DEFAULT 'id', welcome_id TEXT, welcome_en TEXT, service_info_id TEXT, service_info_en TEXT, confirmation_id TEXT, confirmation_en TEXT, completion_id TEXT, completion_en TEXT, forward_template_id TEXT, forward_template_en TEXT, status_template_id TEXT, status_template_en TEXT, unavailable_id TEXT, unavailable_en TEXT, menu_items TEXT DEFAULT '[]', ai_enabled INTEGER DEFAULT 0, ai_prompt TEXT, ai_confidence REAL DEFAULT .8, session_timeout_minutes INTEGER DEFAULT 30, office_hours TEXT DEFAULT 'Monday-Friday, 08:00-16:00', updated_at TEXT DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(org_id) REFERENCES organizations(id));
 CREATE TABLE IF NOT EXISTS conversation_states(id INTEGER PRIMARY KEY, org_id INTEGER NOT NULL, phone TEXT NOT NULL, step TEXT NOT NULL DEFAULT 'menu', language TEXT DEFAULT 'id', data TEXT DEFAULT '{}', human_takeover INTEGER DEFAULT 0, updated_at TEXT DEFAULT CURRENT_TIMESTAMP, UNIQUE(org_id,phone), FOREIGN KEY(org_id) REFERENCES organizations(id));
@@ -133,13 +134,13 @@ def security_headers(response):
 
 def init_db():
     os.makedirs(os.path.dirname(DB), exist_ok=True); os.makedirs(UPLOAD_DIR, exist_ok=True)
-    con=sqlite3.connect(DB, timeout=30); con.executescript(SCHEMA)
+    con=sqlite3.connect(DB, timeout=30); quick_replies_new=not con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='quick_replies'").fetchone(); con.executescript(SCHEMA)
     migrations={
       "organizations":{"app_name":"TEXT DEFAULT 'AduanHub'","icon":"TEXT","timezone":"TEXT DEFAULT 'Asia/Jakarta'","ticket_prefix":"TEXT DEFAULT 'ADU'","ticket_format":"TEXT DEFAULT '{prefix}-{year}-{number:05d}'","notification_sound":"TEXT","notification_sound_enabled":"INTEGER DEFAULT 1"},
       "contacts":{"email":"TEXT"},
       "tickets":{"channel":"TEXT DEFAULT 'whatsapp'","email_subject":"TEXT"},
       "messages":{"attachment_path":"TEXT","attachment_name":"TEXT","attachment_type":"TEXT","delivery_status":"TEXT DEFAULT 'received'","channel":"TEXT DEFAULT 'whatsapp'","external_id":"TEXT"},
-      "flow_configs":{"forward_template_id":"TEXT","forward_template_en":"TEXT","status_template_id":"TEXT","status_template_en":"TEXT","unavailable_id":"TEXT","unavailable_en":"TEXT","identity_prompt_id":"TEXT","identity_prompt_en":"TEXT","chat_waiting_id":"TEXT","chat_waiting_en":"TEXT","chat_connected_id":"TEXT","chat_connected_en":"TEXT","chat_timeout_id":"TEXT","chat_timeout_en":"TEXT","menu_items":"TEXT DEFAULT '[]'","ai_enabled":"INTEGER DEFAULT 0","ai_prompt":"TEXT","ai_confidence":"REAL DEFAULT .8","session_timeout_minutes":"INTEGER DEFAULT 30"}
+      "flow_configs":{"forward_template_id":"TEXT","forward_template_en":"TEXT","status_template_id":"TEXT","status_template_en":"TEXT","unavailable_id":"TEXT","unavailable_en":"TEXT","identity_prompt_id":"TEXT","identity_prompt_en":"TEXT","chat_waiting_id":"TEXT","chat_waiting_en":"TEXT","chat_connected_id":"TEXT","chat_connected_en":"TEXT","chat_timeout_id":"TEXT","chat_timeout_en":"TEXT","idle_enabled":"INTEGER DEFAULT 1","idle_minutes":"INTEGER DEFAULT 60","idle_message_id":"TEXT","idle_message_en":"TEXT","menu_items":"TEXT DEFAULT '[]'","ai_enabled":"INTEGER DEFAULT 0","ai_prompt":"TEXT","ai_confidence":"REAL DEFAULT .8","session_timeout_minutes":"INTEGER DEFAULT 30"}
     }
     for table,columns in migrations.items():
         existing={r[1] for r in con.execute(f"PRAGMA table_info({table})")}
@@ -212,6 +213,16 @@ def init_db():
         if welcome_id!=row[2] or welcome_en!=row[3] or not had_chat:
             con.execute("UPDATE flow_configs SET menu_items=?,welcome_id=?,welcome_en=? WHERE id=?",(json.dumps(items),welcome_id,welcome_en,row[0]))
     con.execute("UPDATE units SET active=1")
+    if quick_replies_new:
+        examples=[
+          ("Mohon lengkapi informasi","Terima kasih atas informasinya. Mohon lengkapi lokasi kejadian, waktu kejadian, dan detail yang perlu kami tindak lanjuti."),
+          ("Sedang kami koordinasikan","Aduan Anda sedang kami koordinasikan dengan unit terkait. Kami akan menyampaikan pembaruan melalui percakapan ini."),
+          ("Permintaan dokumentasi","Mohon kirimkan foto, video, atau dokumen pendukung agar laporan dapat kami verifikasi lebih lanjut."),
+          ("Ucapan penutup","Terima kasih telah menghubungi layanan kami. Jika masih membutuhkan bantuan, silakan kirimkan pesan kembali."),
+        ]
+        for org_row in con.execute("SELECT id FROM organizations").fetchall():
+            for position,(title,body) in enumerate(examples,1): con.execute("INSERT INTO quick_replies(org_id,title,body,position) VALUES(?,?,?,?)",(org_row[0],title,body,position))
+    con.execute("""UPDATE flow_configs SET idle_enabled=COALESCE(idle_enabled,1),idle_minutes=COALESCE(idle_minutes,60),idle_message_id=COALESCE(idle_message_id,'Terima kasih telah menghubungi layanan kami. Percakapan ini kami akhiri karena tidak ada aktivitas. Jika masih membutuhkan bantuan, silakan kirim pesan kembali.'),idle_message_en=COALESCE(idle_message_en,'Thank you for contacting our service. This conversation has ended due to inactivity. If you still need assistance, please send us another message.')""")
     con.commit(); con.close()
 
 def login_required(fn):
@@ -482,8 +493,8 @@ def ticket(tid):
                     db().execute("INSERT INTO messages(ticket_id,direction,body,sender,delivery_status) VALUES(?,?,?,?,?)",(tid,"out",template,session["name"],"sent")); audit("chat.approved","ticket",tid); flash("Pelapor sudah terhubung ke petugas layanan.","success")
                 else: flash(msg,"error")
         db().commit(); return redirect(url_for("ticket",tid=tid))
-    msgs=db().execute("SELECT * FROM messages WHERE ticket_id=? ORDER BY created_at",(tid,)).fetchall(); users=db().execute("SELECT * FROM users WHERE org_id=? AND active=1 AND role IN ('supervisor','agent') ORDER BY unit,name",(session["org_id"],)).fetchall(); units=db().execute("SELECT * FROM units WHERE org_id=? ORDER BY name",(session["org_id"],)).fetchall(); categories=db().execute("SELECT * FROM categories WHERE org_id=? ORDER BY name",(session["org_id"],)).fetchall(); activities=db().execute("SELECT a.*,u.name user_name FROM audit_logs a LEFT JOIN users u ON u.id=a.user_id WHERE a.org_id=? AND a.entity='ticket' AND a.entity_id=? ORDER BY a.created_at DESC LIMIT 20",(session["org_id"],tid)).fetchall(); chat_request=db().execute("SELECT * FROM chat_requests WHERE ticket_id=? ORDER BY id DESC LIMIT 1",(tid,)).fetchone()
-    return render_template("ticket.html",t=t,msgs=msgs,users=users,units=units,categories=categories,activities=activities,chat_request=chat_request,can_reply=can_reply,can_manage=is_central_admin())
+    msgs=db().execute("SELECT * FROM messages WHERE ticket_id=? ORDER BY created_at",(tid,)).fetchall(); users=db().execute("SELECT * FROM users WHERE org_id=? AND active=1 AND role IN ('supervisor','agent') ORDER BY unit,name",(session["org_id"],)).fetchall(); units=db().execute("SELECT * FROM units WHERE org_id=? ORDER BY name",(session["org_id"],)).fetchall(); categories=db().execute("SELECT * FROM categories WHERE org_id=? ORDER BY name",(session["org_id"],)).fetchall(); quick_replies=db().execute("SELECT * FROM quick_replies WHERE org_id=? ORDER BY position,id",(session["org_id"],)).fetchall(); activities=db().execute("SELECT a.*,u.name user_name FROM audit_logs a LEFT JOIN users u ON u.id=a.user_id WHERE a.org_id=? AND a.entity='ticket' AND a.entity_id=? ORDER BY a.created_at DESC LIMIT 20",(session["org_id"],tid)).fetchall(); chat_request=db().execute("SELECT * FROM chat_requests WHERE ticket_id=? ORDER BY id DESC LIMIT 1",(tid,)).fetchone()
+    return render_template("ticket.html",t=t,msgs=msgs,users=users,units=units,categories=categories,quick_replies=quick_replies,activities=activities,chat_request=chat_request,can_reply=can_reply,can_manage=is_central_admin())
 
 @app.post("/tickets/<int:tid>/delete")
 @login_required
@@ -636,7 +647,7 @@ def delete_user(uid):
 @roles("owner","admin")
 def settings():
     section=request.args.get("section","general")
-    if section not in ("general","whatsapp","email","notifications","units","categories"): section="general"
+    if section not in ("general","whatsapp","email","notifications","quick_replies","units","categories"): section="general"
     if request.method=="POST":
         section=request.form.get("section","general")
         org=db().execute("SELECT * FROM organizations WHERE id=?",(session["org_id"],)).fetchone(); logo=org["logo"]; icon=org["icon"]
@@ -663,6 +674,12 @@ def settings():
                 if request.files.get("notification_sound") and request.files["notification_sound"].filename: sound=store_upload(file=request.files["notification_sound"])[0]
             except ValueError as e: flash(str(e),"error"); return redirect(url_for("settings",section="notifications"))
             db().execute("UPDATE organizations SET notification_sound=?,notification_sound_enabled=? WHERE id=?",(sound,1 if request.form.get("notification_sound_enabled") else 0,session["org_id"])); db().commit(); audit("organization.notification_updated","organization",session["org_id"]); flash("Pengaturan notifikasi berhasil disimpan.","success"); return redirect(url_for("settings",section="notifications"))
+        if section=="quick_replies":
+            try: idle_minutes=max(5,min(1440,int(request.form.get("idle_minutes") or 60)))
+            except ValueError: flash("Durasi tanpa aktivitas tidak valid.","error"); return redirect(url_for("settings",section="quick_replies"))
+            message_id=request.form.get("idle_message_id","").strip()[:2000]; message_en=request.form.get("idle_message_en","").strip()[:2000]
+            if not message_id or not message_en: flash("Pesan penutup Indonesia dan Inggris wajib diisi.","error"); return redirect(url_for("settings",section="quick_replies"))
+            db().execute("UPDATE flow_configs SET idle_enabled=?,idle_minutes=?,idle_message_id=?,idle_message_en=?,updated_at=CURRENT_TIMESTAMP WHERE org_id=?",(1 if request.form.get("idle_enabled") else 0,idle_minutes,message_id,message_en,session["org_id"])); db().commit(); audit("quick_reply.idle_updated","flow",session["org_id"]); flash("Pengaturan percakapan otomatis berhasil disimpan.","success"); return redirect(url_for("settings",section="quick_replies"))
         try:
             if request.files.get("logo") and request.files["logo"].filename: logo=store_upload(file=request.files["logo"])[0]
             if request.files.get("icon") and request.files["icon"].filename: icon=store_upload(file=request.files["icon"])[0]
@@ -671,7 +688,32 @@ def settings():
         try: ticket_format.format_map({"prefix":prefix,"year":2026,"month":"08","day":"13","number":1})
         except (KeyError,ValueError): flash("Format nomor aduan tidak valid.","error"); return redirect(url_for("settings",section="general"))
         db().execute("UPDATE organizations SET name=?,app_name=?,accent=?,terminology=?,timezone=?,ticket_prefix=?,ticket_format=?,logo=?,icon=? WHERE id=?",(request.form["name"],request.form.get("app_name","AduanHub").strip()[:60] or "AduanHub",request.form["accent"],request.form["terminology"],request.form.get("timezone","Asia/Jakarta"),prefix,ticket_format,logo,icon,session["org_id"])); db().commit(); session["org_name"]=request.form["name"]; audit("organization.updated","organization",session["org_id"]); flash("Pengaturan berhasil disimpan","success")
-    org=db().execute("SELECT * FROM organizations WHERE id=?",(session["org_id"],)).fetchone(); units=db().execute("SELECT * FROM units WHERE org_id=? ORDER BY name",(session["org_id"],)).fetchall(); categories=db().execute("SELECT c.*,(SELECT count(*) FROM tickets t WHERE t.org_id=c.org_id AND t.category=c.name) usage_count FROM categories c WHERE c.org_id=? ORDER BY c.name",(session["org_id"],)).fetchall(); return render_template("settings.html",org=org,email=email_config(session["org_id"]),units=units,categories=categories,section=section)
+    org=db().execute("SELECT * FROM organizations WHERE id=?",(session["org_id"],)).fetchone(); units=db().execute("SELECT * FROM units WHERE org_id=? ORDER BY name",(session["org_id"],)).fetchall(); categories=db().execute("SELECT c.*,(SELECT count(*) FROM tickets t WHERE t.org_id=c.org_id AND t.category=c.name) usage_count FROM categories c WHERE c.org_id=? ORDER BY c.name",(session["org_id"],)).fetchall(); quick_replies=db().execute("SELECT * FROM quick_replies WHERE org_id=? ORDER BY position,id",(session["org_id"],)).fetchall(); flow=db().execute("SELECT * FROM flow_configs WHERE org_id=?",(session["org_id"],)).fetchone(); return render_template("settings.html",org=org,email=email_config(session["org_id"]),units=units,categories=categories,quick_replies=quick_replies,flow=flow,section=section)
+
+@app.post("/settings/quick-replies")
+@login_required
+@roles("owner","admin")
+def create_quick_reply():
+    title=request.form.get("title","").strip()[:80]; body=request.form.get("body","").strip()[:2000]
+    if not title or not body: flash("Judul dan isi pesan cepat wajib diisi.","error")
+    else:
+        position=db().execute("SELECT COALESCE(max(position),0)+1 FROM quick_replies WHERE org_id=?",(session["org_id"],)).fetchone()[0]; db().execute("INSERT INTO quick_replies(org_id,title,body,position) VALUES(?,?,?,?)",(session["org_id"],title,body,position)); db().commit(); audit("quick_reply.created","quick_reply",metadata={"title":title}); flash("Pesan cepat berhasil ditambahkan.","success")
+    return redirect(url_for("settings",section="quick_replies"))
+
+@app.post("/settings/quick-replies/<int:reply_id>/update")
+@login_required
+@roles("owner","admin")
+def update_quick_reply(reply_id):
+    title=request.form.get("title","").strip()[:80]; body=request.form.get("body","").strip()[:2000]
+    if not title or not body: flash("Judul dan isi pesan cepat wajib diisi.","error")
+    else: db().execute("UPDATE quick_replies SET title=?,body=? WHERE id=? AND org_id=?",(title,body,reply_id,session["org_id"])); db().commit(); audit("quick_reply.updated","quick_reply",reply_id); flash("Pesan cepat diperbarui.","success")
+    return redirect(url_for("settings",section="quick_replies"))
+
+@app.post("/settings/quick-replies/<int:reply_id>/delete")
+@login_required
+@roles("owner","admin")
+def delete_quick_reply(reply_id):
+    db().execute("DELETE FROM quick_replies WHERE id=? AND org_id=?",(reply_id,session["org_id"])); db().commit(); audit("quick_reply.deleted","quick_reply",reply_id); flash("Pesan cepat dihapus.","success"); return redirect(url_for("settings",section="quick_replies"))
 
 @app.post("/settings/email/test")
 @login_required

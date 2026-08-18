@@ -25,6 +25,7 @@
 </audio>{% else %}<span>📎</span>{% endif %}<a href="{{url_for('media_file',filename=m.attachment_path,download=1)}}">{{m.attachment_name or ('Unduh lampiran' if lang=='id' else 'Download attachment')}}</a>
 </div>{% endif %}</div>{% endfor %}</div>
     {% if can_reply %}<form method="post" class="composer" enctype="multipart/form-data">
+{% if quick_replies %}<label class="quick-reply-picker"><span>{{'Pesan cepat' if lang=='id' else 'Quick reply'}}</span><select id="quick-reply-select"><option value="">{{'Pilih template pesan…' if lang=='id' else 'Choose a message template…'}}</option>{% for reply in quick_replies %}<option value="{{reply.body}}">{{reply.title}}</option>{% endfor %}</select></label>{% endif %}
 <textarea name="body" placeholder="{{tr('Write a reply or internal note…')}}">
 </textarea>
 <label class="file-picker">📎 {{'Tambah foto, video, audio, atau PDF (maks. 8 MB)' if lang=='id' else 'Add photo, video, audio, or PDF (max. 8 MB)'}}<input type="file" name="attachment" accept="image/jpeg,image/png,image/webp,video/mp4,audio/mpeg,audio/ogg,application/pdf">
@@ -124,5 +125,5 @@
 </section>{% endif %}
   </form>
 </div>
-<script>const chat=document.querySelector('.messages');if(chat)chat.scrollTop=chat.scrollHeight;const unitSelect=document.querySelector('select[name="unit"]'),assigneeSelect=document.querySelector('select[name="assignee"]');function filterAssignees(){if(!unitSelect||!assigneeSelect)return;[...assigneeSelect.options].forEach((option,index)=>{if(index)option.hidden=option.dataset.unit!==unitSelect.value});if(assigneeSelect.selectedOptions[0]?.hidden)assigneeSelect.value=''}unitSelect?.addEventListener('change',filterAssignees);filterAssignees()</script>
+<script>const chat=document.querySelector('.messages');if(chat)chat.scrollTop=chat.scrollHeight;const quickReply=document.getElementById('quick-reply-select'),replyBox=document.querySelector('.composer textarea[name="body"]');quickReply?.addEventListener('change',()=>{if(quickReply.value&&replyBox){replyBox.value=quickReply.value;replyBox.focus();replyBox.setSelectionRange(replyBox.value.length,replyBox.value.length)}});const unitSelect=document.querySelector('select[name="unit"]'),assigneeSelect=document.querySelector('select[name="assignee"]');function filterAssignees(){if(!unitSelect||!assigneeSelect)return;[...assigneeSelect.options].forEach((option,index)=>{if(index)option.hidden=option.dataset.unit!==unitSelect.value});if(assigneeSelect.selectedOptions[0]?.hidden)assigneeSelect.value=''}unitSelect?.addEventListener('change',filterAssignees);filterAssignees()</script>
 {% endblock %}
