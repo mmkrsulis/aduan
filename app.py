@@ -21,7 +21,8 @@ from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, 
 app = Flask(__name__)
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
 app.secret_key = os.getenv("SECRET_KEY", secrets.token_hex(32))
-app.config.update(MAX_CONTENT_LENGTH=8*1024*1024,SESSION_COOKIE_HTTPONLY=True,SESSION_COOKIE_SAMESITE="Lax",SESSION_COOKIE_SECURE=os.getenv("COOKIE_SECURE","false").lower()=="true",PERMANENT_SESSION_LIFETIME=timedelta(days=30))
+# Base64 webhook payloads are roughly 33% larger than the decoded attachment.
+app.config.update(MAX_CONTENT_LENGTH=12*1024*1024,SESSION_COOKIE_HTTPONLY=True,SESSION_COOKIE_SAMESITE="Lax",SESSION_COOKIE_SECURE=os.getenv("COOKIE_SECURE","false").lower()=="true",PERMANENT_SESSION_LIFETIME=timedelta(days=30))
 api_tokens=URLSafeTimedSerializer(app.secret_key,salt="aduanhub-mobile-v1")
 DB = os.getenv("DATABASE_PATH", os.path.join(os.path.dirname(__file__), "aduan.db"))
 UPLOAD_DIR = os.getenv("UPLOAD_DIR", os.path.join(os.path.dirname(DB), "uploads"))
@@ -341,6 +342,55 @@ def store_upload(file=None, payload=None, original_name=None, mime=None):
     filename=f"{uuid.uuid4().hex}.{ALLOWED_MEDIA[mime]}"
     with open(os.path.join(UPLOAD_DIR,filename),"wb") as target: target.write(raw)
     return filename,(original_name or filename)[:200],mime
+
+def detect_media_mime(raw):
+    if raw.startswith(b"\xff\xd8\xff"): return "image/jpeg"
+    if raw.startswith(b"\x89PNG\r\n\x1a\n"): return "image/png"
+    if raw.startswith(b"RIFF") and raw[8:12]==b"WEBP": return "image/webp"
+    if raw.startswith(b"%PDF-"): return "application/pdf"
+    if raw.startswith(b"OggS"): return "audio/ogg"
+    if raw.startswith(b"ID3") or raw[:2] in (b"\xff\xfb",b"\xff\xf3",b"\xff\xf2"): return "audio/mpeg"
+    if len(raw)>12 and raw[4:8]==b"ftyp": return "video/mp4"
+    return None
+
+def nested_value(value, keys, depth=0):
+    """Find a small metadata value in MPWA's nested Baileys message payload."""
+    if depth>8: return None
+    if isinstance(value,dict):
+        for key in keys:
+            found=value.get(key)
+            if isinstance(found,(str,int,float)) and str(found).strip(): return found
+        for child in value.values():
+            found=nested_value(child,keys,depth+1)
+            if found is not None: return found
+    elif isinstance(value,list):
+        for child in value[:20]:
+            found=nested_value(child,keys,depth+1)
+            if found is not None: return found
+    return None
+
+def decode_webhook_attachment(payload):
+    """Normalize current MPWA Base64 payloads and legacy media.stream payloads."""
+    media=payload.get("media")
+    encoded=payload.get("bufferImage") or payload.get("buffer_image")
+    if not encoded and isinstance(media,dict):
+        stream=media.get("stream") if isinstance(media.get("stream"),dict) else {}
+        encoded=stream.get("data") or media.get("data") or media.get("base64")
+    if not encoded: return None
+    if isinstance(encoded,list): raw=bytes(encoded)
+    elif isinstance(encoded,(bytes,bytearray)): raw=bytes(encoded)
+    elif isinstance(encoded,str):
+        if encoded.startswith("data:") and "," in encoded: encoded=encoded.split(",",1)[1]
+        if len(encoded)>12*1024*1024: raise ValueError("Lampiran melebihi batas 8 MB")
+        raw=base64.b64decode(encoded,validate=True)
+    else: raise ValueError("Format data lampiran tidak dikenali")
+    nested=payload.get("data") if isinstance(payload.get("data"),dict) else {}
+    mime=(payload.get("mimetype") or payload.get("mimeType") or nested_value(nested,("mimetype","mimeType")) or detect_media_mime(raw))
+    mime=str(mime).split(";",1)[0].lower() if mime else None
+    if mime not in ALLOWED_MEDIA: mime=detect_media_mime(raw)
+    name=(payload.get("fileName") or payload.get("filename") or (media.get("fileName") if isinstance(media,dict) else None) or nested_value(nested,("fileName","filename")))
+    if not name: name=f"lampiran.{ALLOWED_MEDIA.get(mime,'bin')}"
+    return store_upload(payload=raw,original_name=secure_filename(str(name)),mime=mime)
 
 def next_ticket_code(org):
     now=datetime.now(timezone.utc); number=db().execute("SELECT count(*)+1 FROM tickets WHERE org_id=?",(org["id"],)).fetchone()[0]
@@ -1148,14 +1198,10 @@ def webhook(slug):
         return jsonify(status=True,ignored="outgoing message")
     phone=str(p.get("from","")).split("@")[0]; body=p.get("message") or "[Lampiran]"; name=p.get("name") or phone
     if not phone: return jsonify(error="missing sender"),400
-    attachment=None; media=p.get("media")
-    if media and p.get("mimetype") in ALLOWED_MEDIA:
-        try:
-            stream=media.get("stream",{}) if isinstance(media,dict) else {}; raw=stream.get("data",[])
-            if isinstance(raw,list): raw=bytes(raw)
-            elif isinstance(raw,str): raw=base64.b64decode(raw)
-            attachment=store_upload(payload=raw,original_name=media.get("fileName"),mime=p.get("mimetype"))
-        except (ValueError,TypeError,base64.binascii.Error): attachment=None
+    try: attachment=decode_webhook_attachment(p)
+    except (ValueError,TypeError,base64.binascii.Error) as exc:
+        app.logger.warning("MPWA attachment rejected for org=%s: %s",slug,exc)
+        return jsonify(error="invalid_attachment",message=str(exc)),422
     reply=flow_reply(org,phone,body,name,attachment)
     if reply is not None: return jsonify(text=reply)
     c=db().execute("SELECT * FROM contacts WHERE org_id=? AND phone=?",(org["id"],phone)).fetchone()
