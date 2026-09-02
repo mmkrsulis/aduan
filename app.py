@@ -1,4 +1,4 @@
-import os, sqlite3, json, secrets, csv, io, base64, uuid, re, hashlib, smtplib, ssl
+import os, sqlite3, json, secrets, csv, io, base64, uuid, re, hashlib, smtplib, ssl, time
 from email.message import EmailMessage
 from datetime import datetime, timezone, timedelta
 from functools import wraps
@@ -10,6 +10,7 @@ from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
 from cryptography.fernet import Fernet, InvalidToken
 import requests
 import qrcode
+import delivery
 from google.auth.transport.requests import Request as GoogleAuthRequest
 from google.oauth2 import service_account
 from zoneinfo import ZoneInfo
@@ -26,6 +27,10 @@ app.config.update(MAX_CONTENT_LENGTH=12*1024*1024,SESSION_COOKIE_HTTPONLY=True,S
 api_tokens=URLSafeTimedSerializer(app.secret_key,salt="aduanhub-mobile-v1")
 DB = os.getenv("DATABASE_PATH", os.path.join(os.path.dirname(__file__), "aduan.db"))
 UPLOAD_DIR = os.getenv("UPLOAD_DIR", os.path.join(os.path.dirname(DB), "uploads"))
+OPENWA_CONTROL_URL = os.getenv("OPENWA_CONTROL_URL", "http://host.docker.internal:8080").rstrip("/")
+OPENWA_PUBLIC_URL = os.getenv("OPENWA_PUBLIC_URL", "http://100.103.199.63:8080").rstrip("/")
+OPENWA_API_KEY = os.getenv("WA_API_KEY", "")
+OPENWA_SESSION_ID = os.getenv("OPENWA_SESSION_ID", "")
 ALLOWED_MEDIA = {"image/jpeg":"jpg","image/png":"png","image/webp":"webp","video/mp4":"mp4","audio/mpeg":"mp3","audio/ogg":"ogg","application/pdf":"pdf"}
 ANDROID_APK_PATH = os.getenv("ANDROID_APK_PATH", os.path.join(os.path.dirname(DB), "releases", "AduanHub.apk"))
 
@@ -81,7 +86,7 @@ ID = {
 }
 
 def tr(value):
-    return ID.get(value, value) if session.get("lang", "en") == "id" else value
+    return ID.get(value, value) if session.get("lang", "id") == "id" else value
 
 def csrf_token():
     if "csrf" not in session: session["csrf"]=secrets.token_urlsafe(32)
@@ -91,7 +96,7 @@ def csrf_token():
 def csrf_protect():
     # Credentials authenticate login; exempt it to avoid stale-token errors after
     # logout, browser back/forward cache, or signing in from multiple tabs.
-    if request.method=="POST" and request.endpoint not in ("webhook","login") and not request.path.startswith("/api/"):
+    if request.method=="POST" and request.endpoint not in ("webhook","login","openwa_ack","openwa_incoming","openwa_process") and not request.path.startswith("/api/"):
         expected=session.get("csrf",""); supplied=request.form.get("csrf_token","") or request.headers.get("X-CSRF-Token","")
         if not expected or not secrets.compare_digest(expected,supplied): return ("Invalid or expired form token",400)
 
@@ -119,7 +124,7 @@ CREATE TABLE IF NOT EXISTS email_receipts(id INTEGER PRIMARY KEY, org_id INTEGER
 
 def db():
     if "db" not in g:
-        g.db = sqlite3.connect(DB,timeout=30); g.db.row_factory = sqlite3.Row; g.db.execute("PRAGMA foreign_keys=ON"); g.db.execute("PRAGMA busy_timeout=30000")
+        g.db = sqlite3.connect(DB,timeout=30,factory=delivery.Connection); g.db.row_factory = sqlite3.Row; g.db.execute("PRAGMA foreign_keys=ON"); g.db.execute("PRAGMA busy_timeout=30000")
     return g.db
 
 @app.teardown_appcontext
@@ -130,14 +135,14 @@ def close_db(_=None):
 @app.after_request
 def security_headers(response):
     response.headers["X-Content-Type-Options"]="nosniff"; response.headers["X-Frame-Options"]="DENY"; response.headers["Referrer-Policy"]="strict-origin-when-cross-origin"; response.headers["Permissions-Policy"]="camera=(), microphone=(), geolocation=()"
-    response.headers["Content-Security-Policy"]="default-src 'self'; style-src 'self' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; script-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'"
+    response.headers["Content-Security-Policy"]="default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; script-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'"
     return response
 
 def init_db():
     os.makedirs(os.path.dirname(DB), exist_ok=True); os.makedirs(UPLOAD_DIR, exist_ok=True)
     con=sqlite3.connect(DB, timeout=30); quick_replies_new=not con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='quick_replies'").fetchone(); con.executescript(SCHEMA)
     migrations={
-      "organizations":{"app_name":"TEXT DEFAULT 'AduanHub'","icon":"TEXT","timezone":"TEXT DEFAULT 'Asia/Jakarta'","ticket_prefix":"TEXT DEFAULT 'ADU'","ticket_format":"TEXT DEFAULT '{prefix}-{year}-{number:05d}'","notification_sound":"TEXT","notification_sound_enabled":"INTEGER DEFAULT 1"},
+      "organizations":{"app_name":"TEXT DEFAULT 'AduanHub'","icon":"TEXT","timezone":"TEXT DEFAULT 'Asia/Jakarta'","ticket_prefix":"TEXT DEFAULT 'ADU'","ticket_format":"TEXT DEFAULT '{prefix}-{year}-{number:05d}'","notification_sound":"TEXT","notification_sound_enabled":"INTEGER DEFAULT 1","public_whatsapp":"TEXT"},
       "contacts":{"email":"TEXT"},
       "tickets":{"channel":"TEXT DEFAULT 'whatsapp'","email_subject":"TEXT"},
       "messages":{"attachment_path":"TEXT","attachment_name":"TEXT","attachment_type":"TEXT","delivery_status":"TEXT DEFAULT 'received'","channel":"TEXT DEFAULT 'whatsapp'","external_id":"TEXT"},
@@ -150,6 +155,7 @@ def init_db():
                 try: con.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
                 except sqlite3.OperationalError as e:
                     if "duplicate column" not in str(e).lower(): raise
+    delivery.migrate(con)
     con.execute("BEGIN IMMEDIATE")
     if not con.execute("SELECT 1 FROM organizations WHERE slug='demo'").fetchone():
         con.execute("INSERT OR IGNORE INTO organizations(name,slug,terminology,mpwa_url) VALUES(?,?,?,?)", ("Education & Culture Office","demo","Complaint",os.getenv("MPWA_BASE_URL","http://host.docker.internal:18082")))
@@ -247,6 +253,25 @@ def audit(action,entity=None,eid=None,metadata=None):
 
 def is_central_admin(): return session.get("role") in ("owner","admin")
 
+def openwa_call(method,args=None,timeout=15):
+    headers={"X-API-Key":OPENWA_API_KEY} if OPENWA_API_KEY else {}
+    sid=OPENWA_SESSION_ID
+    if method=="getHostNumber": response=requests.get(f"{OPENWA_CONTROL_URL}/api/sessions/{sid}",headers=headers,timeout=(3,timeout))
+    elif method=="sendText": response=requests.post(f"{OPENWA_CONTROL_URL}/api/sessions/{sid}/messages/send-text",headers=headers,json={"chatId":args["to"],"text":args["content"]},timeout=(3,timeout))
+    elif method=="logout": response=requests.post(f"{OPENWA_CONTROL_URL}/api/sessions/{sid}/logout",headers=headers,timeout=(3,timeout))
+    else: raise ValueError("Operasi OpenWA tidak didukung")
+    response.raise_for_status()
+    payload=response.json()
+    if not isinstance(payload,dict): raise ValueError("OpenWA menolak permintaan")
+    if method=="getHostNumber": return payload.get("phone") if payload.get("status")=="ready" else None
+    if method=="sendText": return payload.get("messageId") or payload.get("id")
+    return payload
+
+def normalize_whatsapp(value):
+    phone=re.sub(r"\D","",str(value or ""))
+    if phone.startswith("0"): phone="62"+phone[1:]
+    return phone if 8<=len(phone)<=15 else ""
+
 def ticket_access(ticket_row):
     if is_central_admin(): return True
     unit=(session.get("unit") or "").strip()
@@ -331,7 +356,11 @@ def ctx():
         formatted=localdt(value)
         try: return datetime.strptime(formatted,"%d %b %Y, %H:%M:%S").strftime("%d %b %Y")
         except ValueError: return formatted
-    return {"me":session,"brand":brand,"now":datetime.utcnow(),"statuses":["new","verified","assigned","in_progress","waiting","resolved","closed"],"tr":tr,"lang":session.get("lang","en"),"unread":unread,"csrf_token":csrf_token,"localdt":localdt,"localdate":localdate}
+    accent=(brand['accent'] if brand and re.fullmatch(r'#[0-9a-fA-F]{6}',brand['accent'] or '') else '#2563eb')
+    def shade(value,factor):
+        return '#'+''.join(f'{round(int(value[index:index+2],16)*factor):02x}' for index in (1,3,5))
+    sidebar_gradient=f'linear-gradient(180deg,{accent} 0%,{shade(accent,.78)} 58%,{shade(accent,.58)} 100%)'
+    return {"me":session,"brand":brand,"sidebar_gradient":sidebar_gradient,"now":datetime.utcnow(),"statuses":["new","verified","assigned","in_progress","waiting","resolved","closed"],"tr":tr,"lang":session.get("lang","id"),"unread":unread,"csrf_token":csrf_token,"localdt":localdt,"localdate":localdate}
 
 def store_upload(file=None, payload=None, original_name=None, mime=None):
     if file:
@@ -423,7 +452,7 @@ def login():
     if request.method=="POST":
         u=db().execute("SELECT u.*,o.name org_name FROM users u JOIN organizations o ON o.id=u.org_id WHERE email=? AND active=1",(request.form["email"].lower(),)).fetchone()
         if u and check_password_hash(u["password"],request.form["password"]):
-            remember=request.form.get("remember")=="1"; session.clear(); session.permanent=remember; session.update(uid=u["id"],org_id=u["org_id"],name=u["name"],role=u["role"],unit=u["unit"] or "",org_name=u["org_name"]); db().execute("UPDATE users SET last_login=CURRENT_TIMESTAMP WHERE id=?",(u["id"],)); db().commit(); return redirect(url_for("dashboard"))
+            remember=request.form.get("remember")=="1"; session.clear(); session.permanent=remember; session.update(uid=u["id"],org_id=u["org_id"],name=u["name"],role=u["role"],unit=u["unit"] or "",org_name=u["org_name"],lang="id"); db().execute("UPDATE users SET last_login=CURRENT_TIMESTAMP WHERE id=?",(u["id"],)); db().commit(); return redirect(url_for("dashboard"))
         flash("Invalid credentials","error")
     login_brand=db().execute("SELECT name,app_name,logo,icon,accent,terminology FROM organizations ORDER BY id LIMIT 1").fetchone()
     return render_template("login.html",login_brand=login_brand)
@@ -432,6 +461,13 @@ def login():
 def logout(): session.clear(); return redirect(url_for("login"))
 
 @app.route("/")
+def landing():
+    brand=db().execute("SELECT id,name,app_name,logo,icon,accent,terminology,public_whatsapp FROM organizations ORDER BY id LIMIT 1").fetchone()
+    email=db().execute("SELECT address FROM email_configs WHERE org_id=?",(brand["id"],)).fetchone() if brand else None
+    whatsapp=normalize_whatsapp((brand["public_whatsapp"] if brand else "") or os.getenv("PUBLIC_WHATSAPP","") or "")
+    return render_template("landing.html",landing_brand=brand,service_email=(email["address"] if email and email["address"] else ""),service_whatsapp=whatsapp)
+
+@app.route("/dashboard")
 @login_required
 def dashboard():
     oid=session["org_id"]; scope,scope_params=scoped_ticket_where("t"); base=f"t.org_id=? AND {scope}"
@@ -446,7 +482,7 @@ def dashboard():
 def download_android():
     if not os.path.isfile(ANDROID_APK_PATH):
         return ("Android application is not available.", 404)
-    return send_file(ANDROID_APK_PATH, mimetype="application/vnd.android.package-archive", as_attachment=True, download_name="AduanHub-1.3.2.apk")
+    return send_file(ANDROID_APK_PATH, mimetype="application/vnd.android.package-archive", as_attachment=True, download_name="AduanHub-1.4.0.apk")
 
 @app.get("/mobile/connect")
 @login_required
@@ -478,6 +514,56 @@ def tickets():
     rows=db().execute(f"SELECT t.*,c.name contact,c.phone,u.name assignee FROM tickets t JOIN contacts c ON c.id=t.contact_id LEFT JOIN users u ON u.id=t.assignee_id WHERE {where} ORDER BY t.updated_at DESC",params).fetchall()
     return render_template("tickets.html",tickets=rows)
 
+def delivery_message(row):
+    return {key:row[key] for key in ('id','body','sender','created_at','delivery_status','delivery_error','client_token','attachment_name')} | {'attachment_url':url_for('media_file',filename=row['attachment_path']) if row['attachment_path'] else None}
+
+@app.route('/tickets/<int:tid>/delivery',methods=['GET','POST'])
+@login_required
+def ticket_delivery(tid):
+    if not delivery.enabled(): return jsonify(error='disabled'),404
+    t=db().execute('SELECT t.*,c.phone FROM tickets t JOIN contacts c ON c.id=t.contact_id WHERE t.id=? AND t.org_id=?',(tid,session['org_id'])).fetchone()
+    if not t: return jsonify(error='not_found'),404
+    if not ticket_access(t): return jsonify(error='forbidden'),403
+    if request.method=='GET':
+        rows=db().execute("SELECT * FROM messages WHERE ticket_id=? AND delivery_gateway='openwa' ORDER BY id",(tid,)).fetchall()
+        return jsonify(messages=[delivery_message(row) for row in rows])
+    if t['channel']=='email' or t['status'] in ('resolved','closed') or not (is_central_admin() or (session.get('role') in ('supervisor','agent') and t['unit'])):
+        return jsonify(error='Balasan tidak diizinkan.'),403
+    token=request.form.get('client_token','')
+    if not re.fullmatch(r'[A-Za-z0-9_-]{16,100}',token): return jsonify(error='Token pesan tidak valid.'),400
+    existing=db().execute('SELECT * FROM messages WHERE ticket_id=? AND client_token=?',(tid,token)).fetchone()
+    if existing: return jsonify(message=delivery_message(existing)),200
+    body=request.form.get('body','').strip()
+    stored=None
+    upload=request.files.get('attachment')
+    if upload and upload.filename:
+        try: stored=store_upload(file=upload)
+        except ValueError as exc: return jsonify(error=str(exc)),400
+    if not body and not stored: return jsonify(error='Pesan masih kosong.'),400
+    row=delivery.enqueue(db(),t,session['name'],body,stored,token)
+    audit('reply.queued','ticket',tid,{'message_id':row['id'],'channel':'openwa'})
+    return jsonify(message=delivery_message(row)),202
+
+@app.post('/hooks/openwa/ack')
+def openwa_ack():
+    expected=os.getenv('WEBHOOK_SECRET','')
+    supplied=request.headers.get('X-OpenWA-Token','')
+    authorization=request.headers.get('Authorization','')
+    if authorization.startswith('Bearer '): supplied=authorization[7:]
+    if not delivery.enabled() or not expected or not secrets.compare_digest(expected,supplied):
+        return jsonify(error='forbidden'),403
+    payload=request.get_json(silent=True) or {}
+    if not isinstance(payload,dict): return jsonify(error='invalid_event'),400
+    if payload.get('event') not in ('onAck','message.ack') or payload.get('sessionId') not in ('default',OPENWA_SESSION_ID): return jsonify(error='invalid_event'),400
+    data=payload.get('data')
+    if not isinstance(data,dict): return jsonify(error='invalid_data'),400
+    mid=data.get('messageId') or data.get('id'); ack=data.get('ack')
+    if isinstance(mid,dict): mid=mid.get('_serialized')
+    if not isinstance(mid,str) or len(mid)>250 or type(ack) is not int or ack not in delivery.ACK_STATUS:
+        return jsonify(error='invalid_ack'),400
+    delivery.acknowledge(db(),mid,ack)
+    return jsonify(ok=True)
+
 @app.route("/tickets/<int:tid>",methods=["GET","POST"])
 @login_required
 def ticket(tid):
@@ -490,11 +576,8 @@ def ticket(tid):
         if action=="update":
             if not is_central_admin(): return ("Forbidden",403)
             new_status=request.form["status"]; new_category=request.form.get("new_category","").strip()[:80]; category=new_category or request.form.get("category","").strip() or "General"
-            new_unit=request.form["unit"]; new_assignee=request.form.get("assignee") or None
-            if new_assignee and not db().execute("SELECT 1 FROM users WHERE id=? AND org_id=? AND unit=? AND active=1 AND role IN ('supervisor','agent')",(new_assignee,session["org_id"],new_unit)).fetchone(): flash("Petugas harus berasal dari unit yang dipilih.","error"); return redirect(url_for("ticket",tid=tid))
             db().execute("INSERT OR IGNORE INTO categories(org_id,name) VALUES(?,?)",(session["org_id"],category))
-            db().execute("UPDATE tickets SET status=?,priority=?,category=?,unit=?,assignee_id=?,updated_at=CURRENT_TIMESTAMP,closed_at=CASE WHEN ? IN ('resolved','closed') THEN COALESCE(closed_at,CURRENT_TIMESTAMP) ELSE NULL END WHERE id=?",(new_status,request.form["priority"],category,new_unit,new_assignee,new_status,tid)); audit("ticket.updated","ticket",tid,{"status":new_status,"category":category,"unit":new_unit,"assignee":new_assignee})
-            if new_unit and (new_unit!=t["unit"] or str(new_assignee or "")!=str(t["assignee_id"] or "")): notify_assigned_users(session["org_id"],tid,"Aduan ditugaskan",f"{t['code']} telah diteruskan kepada unit Anda.",new_unit,int(new_assignee) if new_assignee else None)
+            db().execute("UPDATE tickets SET status=?,priority=?,category=?,updated_at=CURRENT_TIMESTAMP,closed_at=CASE WHEN ? IN ('resolved','closed') THEN COALESCE(closed_at,CURRENT_TIMESTAMP) ELSE NULL END WHERE id=?",(new_status,request.form["priority"],category,new_status,tid)); audit("ticket.updated","ticket",tid,{"status":new_status,"category":category})
             if new_status in ("resolved","closed"): db().execute("DELETE FROM conversation_states WHERE org_id=? AND phone=?",(session["org_id"],t["phone"]))
         elif action in ("reply","note"):
             if not can_reply: return ("Forbidden",403)
@@ -507,6 +590,9 @@ def ticket(tid):
                 if internal:
                     db().execute("INSERT INTO messages(ticket_id,direction,body,sender,internal,attachment_path,attachment_name,attachment_type) VALUES(?,?,?,?,1,?,?,?)",(tid,"out",body,session["name"],*(stored or (None,None,None)))); db().execute("UPDATE tickets SET updated_at=CURRENT_TIMESTAMP WHERE id=?",(tid,)); db().commit(); audit("note.added","ticket",tid)
                 else:
+                    if delivery.enabled() and t['channel']!='email':
+                        delivery.enqueue(db(),t,session['name'],body,stored,secrets.token_hex(20))
+                        return redirect(url_for('ticket',tid=tid))
                     if t["channel"]=="email": ok,msg=send_ticket_email(t,body,stored)
                     elif stored:
                         media_url=request.url_root.rstrip("/")+url_for("media_file",filename=stored[0]); ok,msg=send_mpwa_media(t["phone"],media_url,stored[2],body)
@@ -520,16 +606,21 @@ def ticket(tid):
             if not is_central_admin(): return ("Forbidden",403)
             unit=db().execute("SELECT * FROM units WHERE id=? AND org_id=? AND active=1",(request.form.get("unit_id"),session["org_id"])).fetchone()
             if unit:
+                assignee=request.form.get('assignee') or None
+                if assignee and not db().execute("SELECT 1 FROM users WHERE id=? AND org_id=? AND unit=? AND active=1 AND role IN ('supervisor','agent')",(assignee,session['org_id'],unit['name'])).fetchone():
+                    flash('Petugas harus berasal dari unit tujuan.','error'); return redirect(url_for('ticket',tid=tid))
+                if t['status'] in ('resolved','closed'):
+                    flash('Buka kembali aduan sebelum mengubah disposisi.','error'); return redirect(url_for('ticket',tid=tid))
                 flow=db().execute("SELECT * FROM flow_configs WHERE org_id=?",(session["org_id"],)).fetchone(); template=flow["forward_template_id" if session.get("lang","id")=="id" else "forward_template_en"]
                 org=db().execute("SELECT * FROM organizations WHERE id=?",(session["org_id"],)).fetchone()
                 original=db().execute("SELECT body FROM messages WHERE ticket_id=? AND direction='in' AND internal=0 ORDER BY id ASC LIMIT 1",(tid,)).fetchone()
                 description=(original["body"] if original and original["body"] else t["subject"])
-                db().execute("UPDATE tickets SET unit=?,status='assigned',updated_at=CURRENT_TIMESTAMP WHERE id=?",(unit["name"],tid)); notify_assigned_users(session["org_id"],tid,"Disposisi aduan baru",f"{t['code']} telah diteruskan ke {unit['name']}. Login untuk membaca dan menanggapi.",unit["name"])
+                db().execute("UPDATE tickets SET unit=?,assignee_id=?,status='assigned',updated_at=CURRENT_TIMESTAMP WHERE id=?",(unit["name"],assignee,tid)); notify_assigned_users(session["org_id"],tid,"Disposisi aduan baru",f"{t['code']} telah diteruskan ke {unit['name']}. Login untuk membaca dan menanggapi.",unit["name"],int(assignee) if assignee else None)
                 notification_sent=False
                 if unit["officer_phone"]:
                     text=fill(template,org,{"code":t["code"],"description":description,"name":t["contact"],"location":t["location"],"priority":t["priority"],"unit":unit["name"],"officer":unit["officer_name"]})+f"\n\nLogin ke aplikasi untuk menanggapi:\n{request.url_root.rstrip('/')}/tickets/{tid}"
                     notification_sent,_=send_mpwa(unit["officer_phone"],text)
-                db().execute("INSERT INTO messages(ticket_id,direction,body,sender,internal) VALUES(?,?,?,?,1)",(tid,"out",f"Diteruskan ke {unit['name']}. Notifikasi WhatsApp petugas: {'terkirim' if notification_sent else 'tidak dikirim'}.",session["name"])); audit("ticket.forwarded","ticket",tid,{"unit":unit["name"],"officer":unit["officer_name"]}); flash("Aduan berhasil diteruskan. Petugas harus login untuk menanggapi.","success")
+                db().execute("INSERT INTO messages(ticket_id,direction,body,sender,internal) VALUES(?,?,?,?,1)",(tid,"out",f"Diteruskan ke {unit['name']}. Notifikasi WhatsApp petugas: {'terkirim' if notification_sent else 'tidak dikirim'}.",session["name"])); audit("ticket.forwarded","ticket",tid,{"unit":unit["name"],"assignee":assignee,"officer":unit["officer_name"]}); flash("Aduan berhasil diteruskan. Petugas harus login untuk menanggapi.","success")
             else: flash("Pilih unit penanggung jawab.","error")
         elif action=="approve_chat" and session.get("role") in ("owner","admin"):
             chat=db().execute("SELECT * FROM chat_requests WHERE ticket_id=? AND org_id=? AND status='pending' AND expires_at>CURRENT_TIMESTAMP ORDER BY id DESC LIMIT 1",(tid,session["org_id"])).fetchone()
@@ -544,7 +635,7 @@ def ticket(tid):
                 else: flash(msg,"error")
         db().commit(); return redirect(url_for("ticket",tid=tid))
     msgs=db().execute("SELECT * FROM messages WHERE ticket_id=? ORDER BY created_at",(tid,)).fetchall(); users=db().execute("SELECT * FROM users WHERE org_id=? AND active=1 AND role IN ('supervisor','agent') ORDER BY unit,name",(session["org_id"],)).fetchall(); units=db().execute("SELECT * FROM units WHERE org_id=? ORDER BY name",(session["org_id"],)).fetchall(); categories=db().execute("SELECT * FROM categories WHERE org_id=? ORDER BY name",(session["org_id"],)).fetchall(); quick_replies=db().execute("SELECT * FROM quick_replies WHERE org_id=? ORDER BY position,id",(session["org_id"],)).fetchall(); activities=db().execute("SELECT a.*,u.name user_name FROM audit_logs a LEFT JOIN users u ON u.id=a.user_id WHERE a.org_id=? AND a.entity='ticket' AND a.entity_id=? ORDER BY a.created_at DESC LIMIT 20",(session["org_id"],tid)).fetchall(); chat_request=db().execute("SELECT * FROM chat_requests WHERE ticket_id=? ORDER BY id DESC LIMIT 1",(tid,)).fetchone()
-    return render_template("ticket.html",t=t,msgs=msgs,users=users,units=units,categories=categories,quick_replies=quick_replies,activities=activities,chat_request=chat_request,can_reply=can_reply,can_manage=is_central_admin())
+    return render_template("ticket.html",t=t,msgs=msgs,users=users,units=units,categories=categories,quick_replies=quick_replies,activities=activities,chat_request=chat_request,can_reply=can_reply,can_manage=is_central_admin(),openwa_delivery=delivery.enabled() and t['channel']!='email')
 
 @app.post("/tickets/<int:tid>/delete")
 @login_required
@@ -561,6 +652,9 @@ def delete_ticket(tid):
     flash(f"Aduan {ticket_row['code']} telah dihapus permanen.","success"); return redirect(url_for("tickets"))
 
 def send_mpwa_for_org(org,phone,body):
+    if delivery.enabled():
+        delivery.queue_system(db(),org['id'],phone,body)
+        return True,'Terkirim.'
     base=org["mpwa_url"] or os.getenv("MPWA_BASE_URL",""); key=org["mpwa_key"] or os.getenv("MPWA_API_KEY",""); sender=org["mpwa_sender"] or os.getenv("MPWA_SENDER","")
     if not (base and key and sender): return False,"Reply saved; configure MPWA credentials to transmit it."
     chunks=[]; remaining=(body or "").strip()
@@ -692,6 +786,79 @@ def delete_user(uid):
         db().execute("UPDATE tickets SET assignee_id=NULL WHERE assignee_id=?",(uid,)); db().execute("DELETE FROM notifications WHERE user_id=?",(uid,)); db().execute("UPDATE audit_logs SET user_id=NULL WHERE user_id=?",(uid,)); db().execute("DELETE FROM users WHERE id=?",(uid,)); db().commit(); audit("user.deleted","user",uid,{"email":user["email"]}); flash("Pengguna berhasil dihapus.","success")
     return redirect(url_for("users"))
 
+@app.get("/settings/whatsapp/status")
+@login_required
+@roles("owner","admin")
+def whatsapp_status():
+    try:
+        phone=normalize_whatsapp(openwa_call("getHostNumber"))
+        return jsonify(connected=bool(phone),phone=phone,scanner_ready=not bool(phone),scan_url=OPENWA_PUBLIC_URL)
+    except (requests.RequestException,ValueError,TypeError):
+        try:
+            scanner=requests.get(f"{OPENWA_CONTROL_URL}/api/sessions/{OPENWA_SESSION_ID}/qr",headers={"X-API-Key":OPENWA_API_KEY},timeout=(2,3))
+            scanner_ready=scanner.status_code==200
+        except requests.RequestException: scanner_ready=False
+        return jsonify(connected=False,phone="",scanner_ready=scanner_ready,scan_url=OPENWA_PUBLIC_URL)
+
+@app.post("/settings/whatsapp/disconnect")
+@login_required
+@roles("owner","admin")
+def whatsapp_disconnect():
+    try:
+        openwa_call("logout",{"preserveSessionData":False},30)
+    except requests.RequestException as error:
+        # OpenWA can close its API immediately after accepting logout.
+        if not isinstance(error,(requests.ConnectionError,requests.ReadTimeout)): return jsonify(error="Sesi OpenWA tidak dapat diputus"),502
+    except ValueError: return jsonify(error="Sesi OpenWA tidak dapat diputus"),502
+    audit("openwa.disconnected","organization",session["org_id"])
+    return jsonify(ok=True,scan_url=OPENWA_PUBLIC_URL)
+
+@app.post("/settings/whatsapp/activate")
+@login_required
+@roles("owner","admin")
+def whatsapp_activate():
+    try: phone=normalize_whatsapp(openwa_call("getHostNumber"))
+    except (requests.RequestException,ValueError,TypeError): phone=""
+    if not phone: return jsonify(error="Nomor baru belum terdeteksi. Selesaikan pemindaian QR lalu coba lagi."),409
+    db().execute("UPDATE organizations SET public_whatsapp=? WHERE id=?",(phone,session["org_id"])); db().commit()
+    audit("openwa.activated","organization",session["org_id"],{"phone_suffix":phone[-4:]})
+    return jsonify(ok=True,connected=True,phone=phone)
+
+@app.post("/settings/whatsapp/test-send")
+@login_required
+@roles("owner","admin")
+def whatsapp_test_send():
+    payload=request.get_json(silent=True) or {}
+    phone=normalize_whatsapp(payload.get("phone"))
+    if not phone: return jsonify(error="Nomor tujuan tidak valid. Gunakan format 08… atau 62…"),400
+    body="Pesan uji koneksi WhatsApp dari AduanHub. Jika pesan ini diterima, pengiriman melalui OpenWA berfungsi."
+    try: external_id=openwa_call("sendText",{"to":phone+"@c.us","content":body},30)
+    except (requests.RequestException,ValueError,TypeError):
+        return jsonify(error="Pesan uji gagal dikirim. Periksa koneksi OpenWA lalu coba lagi."),502
+    if not isinstance(external_id,str) or not external_id:
+        return jsonify(error="OpenWA tidak mengembalikan konfirmasi pengiriman."),502
+    audit("openwa.test_sent","organization",session["org_id"],{"phone_suffix":phone[-4:]})
+    return jsonify(ok=True,phone=phone,message="Pesan uji diterima oleh OpenWA.")
+
+@app.get('/settings/whatsapp/qr')
+@login_required
+@roles('owner','admin')
+def whatsapp_qr():
+    try:
+        response=requests.get(f"{OPENWA_CONTROL_URL}/api/sessions/{OPENWA_SESSION_ID}/qr",headers={"X-API-Key":OPENWA_API_KEY},timeout=6)
+    except requests.RequestException:
+        return jsonify(error='QR OpenWA belum tersedia.'),503
+    try:
+        if response.ok and hasattr(response,'json'):
+            encoded=response.json().get('qrCode','')
+            content=base64.b64decode(encoded.split(',',1)[1],validate=True) if encoded.startswith('data:image/png;base64,') else b''
+        else:
+            content=response.content if response.ok and response.headers.get('Content-Type','').split(';')[0].lower()=='image/png' else b''
+    except (ValueError,TypeError,KeyError): content=b''
+    if not content or len(content)>2*1024*1024:
+        return jsonify(error='QR OpenWA belum tersedia.'),503
+    return Response(content,mimetype='image/png',headers={'Cache-Control':'no-store, max-age=0','Pragma':'no-cache'})
+
 @app.route("/settings",methods=["GET","POST"])
 @login_required
 @roles("owner","admin")
@@ -735,10 +902,12 @@ def settings():
             if request.files.get("icon") and request.files["icon"].filename: icon=store_upload(file=request.files["icon"])[0]
         except ValueError as e: flash(str(e),"error"); return redirect(url_for("settings",section="general"))
         prefix="".join(c for c in request.form.get("ticket_prefix","ADU").upper() if c.isalnum())[:12] or "ADU"; ticket_format=request.form.get("ticket_format","{prefix}-{year}-{number:05d}").strip()[:80]
+        accent=request.form.get("accent","").strip().lower()
+        if not re.fullmatch(r"#[0-9a-f]{6}",accent): flash("Warna utama tidak valid.","error"); return redirect(url_for("settings",section="general"))
         try: ticket_format.format_map({"prefix":prefix,"year":2026,"month":"08","day":"13","number":1})
         except (KeyError,ValueError): flash("Format nomor aduan tidak valid.","error"); return redirect(url_for("settings",section="general"))
-        db().execute("UPDATE organizations SET name=?,app_name=?,accent=?,terminology=?,timezone=?,ticket_prefix=?,ticket_format=?,logo=?,icon=? WHERE id=?",(request.form["name"],request.form.get("app_name","AduanHub").strip()[:60] or "AduanHub",request.form["accent"],request.form["terminology"],request.form.get("timezone","Asia/Jakarta"),prefix,ticket_format,logo,icon,session["org_id"])); db().commit(); session["org_name"]=request.form["name"]; audit("organization.updated","organization",session["org_id"]); flash("Pengaturan berhasil disimpan","success")
-    org=db().execute("SELECT * FROM organizations WHERE id=?",(session["org_id"],)).fetchone(); units=db().execute("SELECT * FROM units WHERE org_id=? ORDER BY name",(session["org_id"],)).fetchall(); categories=db().execute("SELECT c.*,(SELECT count(*) FROM tickets t WHERE t.org_id=c.org_id AND t.category=c.name) usage_count FROM categories c WHERE c.org_id=? ORDER BY c.name",(session["org_id"],)).fetchall(); quick_replies=db().execute("SELECT * FROM quick_replies WHERE org_id=? ORDER BY position,id",(session["org_id"],)).fetchall(); flow=db().execute("SELECT * FROM flow_configs WHERE org_id=?",(session["org_id"],)).fetchone(); return render_template("settings.html",org=org,email=email_config(session["org_id"]),units=units,categories=categories,quick_replies=quick_replies,flow=flow,section=section)
+        db().execute("UPDATE organizations SET name=?,app_name=?,accent=?,terminology=?,timezone=?,ticket_prefix=?,ticket_format=?,logo=?,icon=? WHERE id=?",(request.form["name"],request.form.get("app_name","AduanHub").strip()[:60] or "AduanHub",accent,request.form["terminology"],request.form.get("timezone","Asia/Jakarta"),prefix,ticket_format,logo,icon,session["org_id"])); db().commit(); session["org_name"]=request.form["name"]; audit("organization.updated","organization",session["org_id"]); flash("Pengaturan berhasil disimpan","success")
+    org=db().execute("SELECT * FROM organizations WHERE id=?",(session["org_id"],)).fetchone(); units=db().execute("SELECT * FROM units WHERE org_id=? ORDER BY name",(session["org_id"],)).fetchall(); categories=db().execute("SELECT c.*,(SELECT count(*) FROM tickets t WHERE t.org_id=c.org_id AND t.category=c.name) usage_count FROM categories c WHERE c.org_id=? ORDER BY c.name",(session["org_id"],)).fetchall(); quick_replies=db().execute("SELECT * FROM quick_replies WHERE org_id=? ORDER BY position,id",(session["org_id"],)).fetchall(); flow=db().execute("SELECT * FROM flow_configs WHERE org_id=?",(session["org_id"],)).fetchone(); return render_template("settings.html",org=org,email=email_config(session["org_id"]),units=units,categories=categories,quick_replies=quick_replies,flow=flow,section=section,openwa_public_url=OPENWA_PUBLIC_URL,openwa_qr_url=url_for('whatsapp_qr'),openwa_delivery=delivery.enabled())
 
 @app.post("/settings/quick-replies")
 @login_required
@@ -882,7 +1051,64 @@ def notifications_poll():
     unread=db().execute(f"SELECT count(*) FROM notifications n WHERE n.org_id=? AND {condition} AND n.read_at IS NULL",(session["org_id"],session["uid"])).fetchone()[0]
     org=db().execute("SELECT notification_sound,notification_sound_enabled FROM organizations WHERE id=?",(session["org_id"],)).fetchone()
     sound_url=url_for("media_file",filename=org["notification_sound"]) if org and org["notification_sound"] else None
-    return jsonify(latest=latest,unread=unread,user_key=f"{session['org_id']}-{session['uid']}",sound_enabled=bool(org and org["notification_sound_enabled"]),sound_url=sound_url,notifications=[dict(row) for row in rows])
+    chats=[]
+    if is_central_admin():
+        chats=db().execute("""SELECT cr.id,cr.ticket_id,cr.status,cr.expires_at,cr.created_at,t.code,t.subject,c.name,c.phone,
+            (SELECT m.id FROM messages m WHERE m.ticket_id=t.id AND m.internal=0 ORDER BY m.id DESC LIMIT 1) last_message_id,
+            (SELECT m.direction FROM messages m WHERE m.ticket_id=t.id AND m.internal=0 ORDER BY m.id DESC LIMIT 1) last_message_direction
+            FROM chat_requests cr JOIN tickets t ON t.id=cr.ticket_id JOIN contacts c ON c.id=t.contact_id
+            WHERE cr.org_id=? AND cr.status IN ('pending','approved') AND t.status NOT IN ('resolved','closed')
+            ORDER BY CASE cr.status WHEN 'pending' THEN 0 ELSE 1 END,cr.created_at DESC LIMIT 20""",(session["org_id"],)).fetchall()
+    return jsonify(latest=latest,unread=unread,user_key=f"{session['org_id']}-{session['uid']}",sound_enabled=bool(org and org["notification_sound_enabled"]),sound_url=sound_url,chat_enabled=is_central_admin(),chat_requests=[dict(row) for row in chats],notifications=[dict(row) for row in rows])
+
+@app.get('/chat-widget/tickets/<int:tid>/messages')
+@login_required
+@roles('owner','admin')
+def chat_widget_messages(tid):
+    ticket_row=db().execute("SELECT t.*,c.name contact,c.phone FROM tickets t JOIN contacts c ON c.id=t.contact_id WHERE t.id=? AND t.org_id=?",(tid,session['org_id'])).fetchone()
+    if not ticket_row: return jsonify(error='not_found'),404
+    rows=db().execute("SELECT id,direction,body,sender,internal,created_at,delivery_status,attachment_path,attachment_name,attachment_type FROM messages WHERE ticket_id=? ORDER BY id DESC LIMIT 100",(tid,)).fetchall()[::-1]
+    messages=[]
+    for row in rows:
+        item=dict(row); item['attachment_url']=url_for('media_file',filename=row['attachment_path']) if row['attachment_path'] else None; item.pop('attachment_path',None); messages.append(item)
+    return jsonify(ticket={'id':ticket_row['id'],'code':ticket_row['code'],'contact':ticket_row['contact'],'phone':ticket_row['phone'],'status':ticket_row['status']},messages=messages,delivery_url=url_for('ticket_delivery',tid=tid))
+
+@app.post('/chat-widget/tickets/<int:tid>/internal-note')
+@login_required
+@roles('owner','admin')
+def chat_widget_internal_note(tid):
+    ticket_row=db().execute("SELECT id FROM tickets WHERE id=? AND org_id=?",(tid,session['org_id'])).fetchone()
+    if not ticket_row: return jsonify(error='not_found'),404
+    body=request.form.get('body','').strip(); stored=None; upload=request.files.get('attachment')
+    if upload and upload.filename:
+        try: stored=store_upload(file=upload)
+        except ValueError as exc: return jsonify(error=str(exc)),400
+    if not body and not stored: return jsonify(error='Catatan masih kosong.'),400
+    mid=db().execute("INSERT INTO messages(ticket_id,direction,body,sender,internal,attachment_path,attachment_name,attachment_type,delivery_status,channel) VALUES(?,'out',?,?,1,?,?,?,'received','internal')",(tid,body,session['name'],*(stored or (None,None,None)))).lastrowid
+    db().execute("UPDATE tickets SET updated_at=CURRENT_TIMESTAMP WHERE id=?",(tid,)); db().commit(); audit('internal_note.created','ticket',tid,{'message_id':mid})
+    return jsonify(ok=True,id=mid),201
+
+@app.post('/chat-widget/requests/<int:chat_id>/approve')
+@login_required
+@roles('owner','admin')
+def chat_widget_approve(chat_id):
+    claimed=db().execute("UPDATE chat_requests SET status='processing' WHERE id=? AND org_id=? AND status='pending' AND expires_at>CURRENT_TIMESTAMP",(chat_id,session['org_id'])).rowcount
+    if not claimed: db().rollback(); return jsonify(error='Permintaan sudah diproses atau kedaluwarsa.'),409
+    db().commit()
+    chat=db().execute("SELECT cr.*,t.code FROM chat_requests cr JOIN tickets t ON t.id=cr.ticket_id WHERE cr.id=? AND cr.org_id=? AND cr.status='processing'",(chat_id,session['org_id'])).fetchone()
+    if not chat: return jsonify(error='Permintaan sudah diproses.'),409
+    flow=db().execute("SELECT * FROM flow_configs WHERE org_id=?",(session['org_id'],)).fetchone(); template=flow['chat_connected_id' if chat['language']=='id' else 'chat_connected_en']
+    ok,message=send_mpwa(chat['phone'],template)
+    if not ok:
+        db().execute("UPDATE chat_requests SET status='pending' WHERE id=? AND status='processing' AND expires_at>CURRENT_TIMESTAMP",(chat_id,)); db().commit()
+        return jsonify(error=message),502
+    changed=db().execute("UPDATE chat_requests SET status='approved',approved_by=?,approved_at=CURRENT_TIMESTAMP WHERE id=? AND status='processing'",(session['uid'],chat_id)).rowcount
+    if not changed: db().rollback(); return jsonify(error='Permintaan sudah diproses.'),409
+    db().execute("UPDATE conversation_states SET step='human_chat',human_takeover=1,updated_at=CURRENT_TIMESTAMP WHERE org_id=? AND phone=?",(session['org_id'],chat['phone']))
+    db().execute("INSERT INTO messages(ticket_id,direction,body,sender,delivery_status,channel) VALUES(?,?,?,?,?,?)",(chat['ticket_id'],'out',template,session['name'],'sent','whatsapp'))
+    db().execute("UPDATE notifications SET read_at=CURRENT_TIMESTAMP WHERE org_id=? AND ticket_id=? AND read_at IS NULL",(session['org_id'],chat['ticket_id']))
+    audit('chat.approved','ticket',chat['ticket_id'],{'source':'chat_widget'}); db().commit()
+    return jsonify(ok=True,ticket_id=chat['ticket_id'],code=chat['code'])
 
 @app.get("/documentation")
 @login_required
@@ -1152,6 +1378,11 @@ def api_ticket_reply(tid):
         try: stored=store_upload(file=upload)
         except ValueError as exc: return jsonify(error="invalid_attachment",message=str(exc)),400
     if not body and not stored: return jsonify(error="empty_message"),400
+    if delivery.enabled() and t['channel']!='email':
+        token=request.form.get('client_token') or payload.get('client_token') or secrets.token_hex(20)
+        if not isinstance(token,str) or not re.fullmatch(r'[A-Za-z0-9_-]{16,100}',token): return jsonify(error='invalid_token'),400
+        message=delivery.enqueue(db(),t,u['name'],body,stored,token)
+        return jsonify(status=message['delivery_status'],id=message['id']),202
     org=db().execute("SELECT * FROM organizations WHERE id=?",(u["org_id"],)).fetchone()
     if t["channel"]=="email": ok,message=send_ticket_email(t,body,stored)
     elif stored: ok,message=send_mpwa_media_for_org(org,t["phone"],request.url_root.rstrip("/")+url_for("media_file",filename=stored[0]),stored[2],body)
@@ -1202,6 +1433,9 @@ def webhook(slug):
     except (ValueError,TypeError,base64.binascii.Error) as exc:
         app.logger.warning("MPWA attachment rejected for org=%s: %s",slug,exc)
         return jsonify(error="invalid_attachment",message=str(exc)),422
+    return handle_incoming(org,phone,body,name,attachment)
+
+def handle_incoming(org,phone,body,name,attachment=None):
     reply=flow_reply(org,phone,body,name,attachment)
     if reply is not None: return jsonify(text=reply)
     c=db().execute("SELECT * FROM contacts WHERE org_id=? AND phone=?",(org["id"],phone)).fetchone()
@@ -1212,6 +1446,62 @@ def webhook(slug):
         code=next_ticket_code(org); db().execute("INSERT INTO tickets(org_id,contact_id,code,subject) VALUES(?,?,?,?)",(org["id"],cid,code,body[:100])); tid=db().execute("SELECT last_insert_rowid()").fetchone()[0]
     else: tid=t["id"]
     db().execute("INSERT INTO messages(ticket_id,direction,body,sender,attachment_path,attachment_name,attachment_type) VALUES(?,?,?,?,?,?,?)",(tid,"in",body,name,*(attachment or (None,None,None)))); db().execute("UPDATE tickets SET updated_at=CURRENT_TIMESTAMP WHERE id=?",(tid,)); create_notification(org["id"],tid,"Pesan baru dari pengadu",f"{name}: {body[:120]}"); notify_assigned_users(org["id"],tid,"Pesan baru dari pengadu",f"{t['code'] if t else code}: {body[:120]}",t["unit"] if t else None,t["assignee_id"] if t else None); db().commit(); return jsonify(status=True,ticket_id=tid)
+
+def openwa_authorized():
+    expected=os.getenv('WEBHOOK_SECRET','')
+    supplied=request.headers.get('X-OpenWA-Token','')
+    authorization=request.headers.get('Authorization','')
+    if authorization.startswith('Bearer '): supplied=authorization[7:]
+    return delivery.enabled() and bool(expected) and secrets.compare_digest(expected,supplied)
+
+@app.post('/hooks/openwa/incoming')
+def openwa_incoming():
+    if not openwa_authorized(): return jsonify(error='forbidden'),403
+    payload=request.get_json(silent=True)
+    if not isinstance(payload,dict) or payload.get('sessionId') not in ('default',OPENWA_SESSION_ID) or payload.get('event') not in ('onMessage','onAnyMessage','message.received'): return jsonify(error='invalid_event'),400
+    try: message=delivery.normalize_incoming(payload.get('data'))
+    except ValueError as exc: return jsonify(error=str(exc)),400
+    if message is None: return jsonify(ignored=True)
+    org=db().execute('SELECT id FROM organizations WHERE slug=?',(os.getenv('OPENWA_ORG_SLUG','demo'),)).fetchone()
+    if not org: return jsonify(error='organization_not_configured'),503
+    db().execute('INSERT OR IGNORE INTO openwa_inbox(id,org_id,phone,payload) VALUES(?,?,?,?)',(message['id'],org['id'],message['phone'],json.dumps(message)))
+    db().commit()
+    return jsonify(accepted=True),202
+
+@app.post('/internal/openwa/process')
+def openwa_process():
+    if not openwa_authorized(): return jsonify(error='forbidden'),403
+    payload=request.get_json(silent=True) or {}
+    if not isinstance(payload,dict) or not isinstance(payload.get('id'),str): return jsonify(error='invalid_id'),400
+    con=db(); con.execute('BEGIN IMMEDIATE'); con.hold_commit=True
+    try:
+        row=con.execute('SELECT * FROM openwa_inbox WHERE id=?',(payload['id'],)).fetchone()
+        if not row: con.rollback(); return jsonify(error='not_found'),404
+        if row['status']=='done': con.rollback(); return jsonify(duplicate=True)
+        # All flow-state commits are held until the reply is durably queued.
+        message=json.loads(row['payload']); org=con.execute('SELECT * FROM organizations WHERE id=?',(row['org_id'],)).fetchone()
+        attachment=None
+        if payload.get('media'):
+            attachment=decode_webhook_attachment({'bufferImage':payload['media'],'mimetype':message['mime'],'filename':message['filename']})
+        body=message['body']
+        if message['media'] and not attachment: body+='\n[Lampiran tidak tersedia; silakan kirim ulang sebagai JPG/PNG/PDF atau video maksimal 8 MB.]'
+        result=handle_incoming(org,row['phone'],body,message['name'],attachment).get_json()
+        if result.get('ticket_id'):
+            con.execute("UPDATE messages SET external_id=? WHERE id=(SELECT MAX(id) FROM messages WHERE ticket_id=? AND direction='in')",(row['id'],result['ticket_id']))
+        if result.get('text'):
+            outid=delivery.queue_system(con,org['id'],row['phone'],result['text'],'in:'+row['id'])
+            ticket=con.execute("SELECT t.id FROM tickets t JOIN contacts c ON c.id=t.contact_id WHERE t.org_id=? AND c.phone=? AND t.status NOT IN ('closed','resolved') ORDER BY t.id DESC LIMIT 1",(org['id'],row['phone'])).fetchone()
+            if ticket:
+                mid=con.execute("INSERT INTO messages(ticket_id,direction,body,sender,delivery_status,delivery_gateway,channel) VALUES(?,'out',?,'Sistem','queued','openwa','whatsapp')",(ticket['id'],result['text'])).lastrowid
+                con.execute('UPDATE openwa_system_outbox SET message_id=? WHERE id=?',(mid,outid))
+        con.execute("UPDATE openwa_inbox SET status='done',error=? WHERE id=?",('media_unavailable' if message['media'] and not attachment else None,row['id']))
+        con.hold_commit=False; con.commit()
+        return jsonify(processed=True)
+    except (ValueError,TypeError,base64.binascii.Error):
+        con.rollback(); return jsonify(error='invalid_payload'),422
+    except Exception:
+        con.rollback(); raise
+    finally: con.hold_commit=False
 
 with app.app_context(): init_db()
 if __name__=="__main__": app.run(host="0.0.0.0",port=8080,debug=True)

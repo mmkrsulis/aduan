@@ -3,6 +3,7 @@
 {% block heading %}{{t.code}}{% endblock %}
 {% block subheading %}{{t.subject}}{% endblock %}
 {% block content %}
+<link rel="stylesheet" href="{{url_for('static',filename='delivery.css',v='2')}}">
 <div class="case-layout">
   <div class="panel conversation">
     <div class="contact-head">
@@ -11,7 +12,15 @@
 <b>{{t.contact}}</b>
 <span>{{t.email if t.channel=='email' else t.phone}} · {{'Email' if t.channel=='email' else 'WhatsApp'}} · {{t.location or tr('Location not provided')}}</span>
 </div>
+<div class="conversation-tools">
+<details class="chat-appearance"><summary title="Atur warna percakapan">🎨 Tampilan</summary><div class="chat-appearance-panel"><b>Tampilan chat</b><label>Tema<select id="chat-palette"><option value="blue">Biru layanan</option><option value="green">Hijau lembut</option><option value="violet">Ungu</option><option value="neutral">Netral</option><option value="custom">Kustom</option></select></label><label>Latar chat<input type="color" data-chat-color="bg" aria-label="Warna latar chat"></label><label>Pesan masuk<input type="color" data-chat-color="in" aria-label="Warna pesan masuk"></label><label>Balasan petugas<input type="color" data-chat-color="out" aria-label="Warna balasan petugas"></label><label>Catatan internal<input type="color" data-chat-color="note" aria-label="Warna catatan internal"></label><label class="chat-pattern-label"><input type="checkbox" id="chat-pattern"> Motif titik</label><button type="button" id="chat-appearance-reset">Reset tampilan</button><small>Disimpan di browser ini. Warna teks menyesuaikan otomatis.</small></div></details>
+<div class="chat-font-controls" role="group" aria-label="{{'Ukuran teks percakapan' if lang=='id' else 'Conversation text size'}}">
+<button type="button" data-chat-font="decrease" title="{{'Perkecil teks' if lang=='id' else 'Decrease text size'}}">A−</button>
+<button type="button" data-chat-font="reset" title="{{'Ukuran teks normal' if lang=='id' else 'Normal text size'}}">A</button>
+<button type="button" data-chat-font="increase" title="{{'Perbesar teks' if lang=='id' else 'Increase text size'}}">A+</button>
+</div>
 <span class="badge {{t.status}}">{{tr(t.status|replace('_',' '))}}</span>
+</div>
 </div>
     <div class="case-timebar">
 <span>
@@ -19,22 +28,23 @@
 <span>
 <b>{{'Terakhir diperbarui' if lang=='id' else 'Last updated'}}</b>{{t.updated_at}}</span>{% if t.closed_at %}<span>
 <b>{{'Selesai' if lang=='id' else 'Closed'}}</b>{{t.closed_at}}</span>{% endif %}</div>
-    <div class="messages">{% for m in msgs %}<div class="message {{m.direction}} {% if m.internal %}internal{% endif %}">
-<small>{{tr('Internal note') if m.internal else m.sender}} · {{m.created_at}}{% if m.direction=='out' and not m.internal %} · {{m.delivery_status or 'sent'}}{% endif %}</small>{% if m.body %}<p>{{m.body}}</p>{% endif %}{% if m.attachment_path %}<div class="attachment">{% if m.attachment_type.startswith('image/') %}<img src="{{url_for('media_file',filename=m.attachment_path)}}" alt="{{m.attachment_name}}">{% elif m.attachment_type.startswith('video/') %}<video controls preload="metadata" src="{{url_for('media_file',filename=m.attachment_path)}}">
+    <div class="messages" {% if openwa_delivery %}data-delivery-url="{{url_for('ticket_delivery',tid=t.id)}}"{% endif %}>{% for m in msgs %}<div data-message-id="{{m.id}}" data-client-token="{{m.client_token or ''}}" class="message {{m.direction}} {% if m.internal %}internal{% endif %}">
+<small>{{tr('Internal note') if m.internal else m.sender}} · {{m.created_at}}{% if m.direction=='out' and not m.internal %} · <span class="delivery-status" data-status="{{m.delivery_status or 'sent'}}">{{m.delivery_status or 'sent'}}</span>{% endif %}</small>{% if m.body %}<p>{{m.body}}</p>{% endif %}{% if m.attachment_path %}<div class="attachment">{% if m.attachment_type.startswith('image/') %}<img src="{{url_for('media_file',filename=m.attachment_path)}}" alt="{{m.attachment_name}}">{% elif m.attachment_type.startswith('video/') %}<video controls preload="metadata" src="{{url_for('media_file',filename=m.attachment_path)}}">
 </video>{% elif m.attachment_type.startswith('audio/') %}<audio controls src="{{url_for('media_file',filename=m.attachment_path)}}">
 </audio>{% else %}<span>📎</span>{% endif %}<a href="{{url_for('media_file',filename=m.attachment_path,download=1)}}">{{m.attachment_name or ('Unduh lampiran' if lang=='id' else 'Download attachment')}}</a>
 </div>{% endif %}</div>{% endfor %}</div>
-    {% if can_reply %}<form method="post" class="composer" enctype="multipart/form-data">
-{% if quick_replies %}<label class="quick-reply-picker"><span>{{'Pesan cepat' if lang=='id' else 'Quick reply'}}</span><select id="quick-reply-select"><option value="">{{'Pilih template pesan…' if lang=='id' else 'Choose a message template…'}}</option>{% for reply in quick_replies %}<option value="{{reply.body}}">{{reply.title}}</option>{% endfor %}</select></label>{% endif %}
-<textarea name="body" placeholder="{{tr('Write a reply or internal note…')}}">
-</textarea>
-<label class="file-picker">📎 {{'Tambah foto, video, audio, atau PDF (maks. 8 MB)' if lang=='id' else 'Add photo, video, audio, or PDF (max. 8 MB)'}}<input type="file" name="attachment" accept="image/jpeg,image/png,image/webp,video/mp4,audio/mpeg,audio/ogg,application/pdf">
-</label>
-<div>
-<button name="action" value="note" class="secondary">{{tr('Add internal note')}}</button>
-<button name="action" value="reply" class="primary">
-<span data-icon="send">
-</span>{{tr('Reply')}}</button>
+    {% if can_reply %}<form method="post" class="composer chat-composer" enctype="multipart/form-data">
+{% if quick_replies %}<div class="quick-reply-popover" id="quick-reply-popover" hidden><label for="quick-reply-select">{{'Pilih pesan cepat' if lang=='id' else 'Choose a quick reply'}}</label><select id="quick-reply-select"><option value="">{{'Pilih template pesan…' if lang=='id' else 'Choose a message template…'}}</option>{% for reply in quick_replies %}<option value="{{reply.body}}">{{reply.title}}</option>{% endfor %}</select></div>{% endif %}
+<div class="attachment-chip" id="attachment-chip" hidden><span>📎</span><b id="attachment-name"></b><button type="button" id="clear-attachment" aria-label="{{'Hapus lampiran' if lang=='id' else 'Remove attachment'}}">×</button></div>
+<div class="composer-mode" role="group" aria-label="{{'Jenis pesan' if lang=='id' else 'Message type'}}">
+<button type="button" class="active" data-compose-mode="reply">{{'Balasan' if lang=='id' else 'Reply'}}</button>
+<button type="button" data-compose-mode="note">{{'Catatan internal' if lang=='id' else 'Internal note'}}</button>
+</div>
+<div class="composer-row">
+{% if quick_replies %}<button type="button" class="composer-icon" id="toggle-quick-reply" title="{{'Pesan cepat' if lang=='id' else 'Quick replies'}}" aria-expanded="false" aria-controls="quick-reply-popover">⚡</button>{% endif %}
+<label class="composer-icon attachment-button" title="{{'Lampirkan file' if lang=='id' else 'Attach file'}}">📎<input id="attachment-input" type="file" name="attachment" accept="image/jpeg,image/png,image/webp,video/mp4,audio/mpeg,audio/ogg,application/pdf"></label>
+<textarea name="body" rows="1" placeholder="{{'Ketik pesan' if lang=='id' else 'Type a message'}}"></textarea>
+<button name="action" value="reply" class="composer-send" id="composer-submit" title="{{'Kirim balasan' if lang=='id' else 'Send reply'}}" aria-label="{{'Kirim balasan' if lang=='id' else 'Send reply'}}"><span data-icon="send"></span></button>
 </div>
 </form>{% else %}<div class="composer locked-composer"><b>Aduan belum didisposisikan kepada akun Anda.</b><span>Admin Pusat harus meneruskan aduan ke unit atau petugas terkait sebelum balasan dapat dikirim.</span></div>{% endif %}
   </div>
@@ -55,7 +65,7 @@
 <span>01</span>
 <div>
 <h3>{{tr('Case details')}}</h3>
-<p>{{'Klasifikasi dan penugasan aduan' if lang=='id' else 'Classification and assignment'}}</p>
+<p>{{'Status, prioritas, dan kategori' if lang=='id' else 'Status, priority, and category'}}</p>
 </div>
 </div>
       <fieldset class="management-fields" {% if not can_manage %}disabled{% endif %}>
@@ -74,18 +84,28 @@
 <input name="new_category" placeholder="{{'Ketik nama kategori' if lang=='id' else 'Enter category name'}}">
 </details>
 </fieldset>
-      <label>{{tr('Responsible unit')}}<select name="unit">
-<option value="">{{tr('Unassigned')}}</option>{% for unit in units %}<option {% if t.unit==unit.name %}selected{% endif %}>{{unit.name}}</option>{% endfor %}</select>
-</label>
-      <label>{{tr('Assignee')}}<select name="assignee">
-<option value="">{{tr('Unassigned')}}</option>{% for u in users %}<option value="{{u.id}}" data-unit="{{u.unit}}" {% if t.assignee_id==u.id %}selected{% endif %}>{{u.name}} · {{u.unit}} · {{u.role}}</option>{% endfor %}</select>
-</label>
-      {% if can_manage %}<button name="action" value="update" class="primary wide">{{tr('Save changes')}}</button>{% endif %}
+      {% if can_manage %}<button name="action" value="update" class="primary wide">Simpan detail aduan</button>{% endif %}
       </fieldset>
+      <div class="assignment-summary"><small>Penanggung jawab saat ini</small><b>{{t.unit or 'Belum didisposisikan'}}</b><span>{% if t.assignee_id %}{% set officer=users|selectattr('id','equalto',t.assignee_id)|first %}{{officer.name if officer else 'Petugas tidak aktif'}}{% else %}{{'Tim unit (belum ada petugas khusus)' if t.unit else 'Tentukan melalui Disposisi aduan'}}{% endif %}</span></div>
     </section>
-    <section class="side-section">
+    {% if can_manage %}<section class="side-section">
 <div class="side-section-head">
 <span>02</span>
+<div>
+<h3>{{'Disposisikan aduan' if lang=='id' else 'Assign complaint'}}</h3>
+<p>{{'Tentukan unit dan petugas penanggung jawab' if lang=='id' else 'Assign the responsible unit and officer'}}</p>
+</div>
+</div>
+<label>{{'Unit / bidang tujuan' if lang=='id' else 'Responsible unit'}}<select name="unit_id">
+<option value="">{{'Pilih unit' if lang=='id' else 'Select unit'}}</option>{% for unit in units if unit.active %}<option value="{{unit.id}}" data-unit="{{unit.name}}" {% if t.unit==unit.name %}selected{% endif %}>{{unit.name}}</option>{% endfor %}</select>
+</label>
+<label>Petugas (opsional)<select name="assignee"><option value="">Tim unit — tanpa petugas khusus</option>{% for u in users %}<option value="{{u.id}}" data-unit="{{u.unit}}" {% if t.assignee_id==u.id %}selected{% endif %}>{{u.name}} · {{u.role}}</option>{% endfor %}</select></label>
+<p class="assignment-help">Disposisi memberikan akses kepada unit/petugas tujuan dan mengubah status menjadi Ditugaskan.</p>
+<button name="action" value="forward" class="secondary wide">{{'Simpan disposisi' if lang=='id' else 'Save assignment'}}</button>
+</section>{% endif %}
+    <section class="side-section">
+<div class="side-section-head">
+<span>{{'03' if can_manage else '02'}}</span>
 <div>
 <h3>{{'Riwayat aktivitas' if lang=='id' else 'Activity timeline'}}</h3>
 <p>{{'Perubahan terbaru pada aduan' if lang=='id' else 'Recent complaint changes'}}</p>
@@ -100,19 +120,6 @@
 </span>
 </div>{% else %}<p>{{'Belum ada aktivitas petugas.' if lang=='id' else 'No officer activity yet.'}}</p>{% endfor %}</div>
 </section>
-    {% if can_manage %}<section class="side-section">
-<div class="side-section-head">
-<span>03</span>
-<div>
-<h3>{{'Disposisikan aduan' if lang=='id' else 'Assign complaint'}}</h3>
-<p>{{'Berikan akses kepada bidang tujuan' if lang=='id' else 'Grant access to the responsible unit'}}</p>
-</div>
-</div>
-<label>{{'Unit / bidang tujuan' if lang=='id' else 'Responsible unit'}}<select name="unit_id">
-<option value="">{{'Pilih unit' if lang=='id' else 'Select unit'}}</option>{% for unit in units %}<option value="{{unit.id}}">{{unit.name}} · {{unit.officer_name or 'Officer'}} · {{unit.officer_phone or 'No WhatsApp'}}</option>{% endfor %}</select>
-</label>
-<button name="action" value="forward" class="secondary wide">{{'Disposisikan ke bidang' if lang=='id' else 'Assign to unit'}}</button>
-</section>{% endif %}
     {% if me.role in ['owner','admin'] %}<section class="side-section danger-zone">
 <div class="side-section-head">
 <span>04</span>
@@ -125,5 +132,9 @@
 </section>{% endif %}
   </form>
 </div>
-<script>const chat=document.querySelector('.messages');if(chat)chat.scrollTop=chat.scrollHeight;const quickReply=document.getElementById('quick-reply-select'),replyBox=document.querySelector('.composer textarea[name="body"]');quickReply?.addEventListener('change',()=>{if(quickReply.value&&replyBox){replyBox.value=quickReply.value;replyBox.focus();replyBox.setSelectionRange(replyBox.value.length,replyBox.value.length)}});const unitSelect=document.querySelector('select[name="unit"]'),assigneeSelect=document.querySelector('select[name="assignee"]');function filterAssignees(){if(!unitSelect||!assigneeSelect)return;[...assigneeSelect.options].forEach((option,index)=>{if(index)option.hidden=option.dataset.unit!==unitSelect.value});if(assigneeSelect.selectedOptions[0]?.hidden)assigneeSelect.value=''}unitSelect?.addEventListener('change',filterAssignees);filterAssignees()</script>
+<script>const chat=document.querySelector('.messages');if(chat)chat.scrollTop=chat.scrollHeight;const chatFontSizes=[13,15,17,19],chatFontKey='aduanhubChatFontSize';function applyChatFont(value){const size=chatFontSizes.includes(Number(value))?Number(value):15;document.querySelector('.conversation')?.style.setProperty('--chat-font-size',`${size}px`);localStorage.setItem(chatFontKey,String(size));document.querySelectorAll('[data-chat-font]').forEach(button=>button.classList.toggle('active',button.dataset.chatFont==='reset'&&size===15));return size}let chatFontSize=applyChatFont(localStorage.getItem(chatFontKey));document.querySelectorAll('[data-chat-font]').forEach(button=>button.addEventListener('click',()=>{const action=button.dataset.chatFont,index=chatFontSizes.indexOf(chatFontSize);chatFontSize=applyChatFont(action==='increase'?chatFontSizes[Math.min(index+1,chatFontSizes.length-1)]:action==='decrease'?chatFontSizes[Math.max(index-1,0)]:15)}));const quickReply=document.getElementById('quick-reply-select'),replyBox=document.querySelector('.composer textarea[name="body"]');quickReply?.addEventListener('change',()=>{if(quickReply.value&&replyBox){replyBox.value=quickReply.value;replyBox.focus();replyBox.setSelectionRange(replyBox.value.length,replyBox.value.length)}});const unitSelect=document.querySelector('select[name="unit"]'),assigneeSelect=document.querySelector('select[name="assignee"]');function filterAssignees(){if(!unitSelect||!assigneeSelect)return;[...assigneeSelect.options].forEach((option,index)=>{if(index)option.hidden=option.dataset.unit!==unitSelect.value});if(assigneeSelect.selectedOptions[0]?.hidden)assigneeSelect.value=''}unitSelect?.addEventListener('change',filterAssignees);filterAssignees()</script>
+<script>(()=>{const composer=document.querySelector('.chat-composer');if(!composer)return;const box=composer.querySelector('textarea'),submit=document.getElementById('composer-submit'),popover=document.getElementById('quick-reply-popover'),quickToggle=document.getElementById('toggle-quick-reply'),file=document.getElementById('attachment-input'),chip=document.getElementById('attachment-chip'),fileName=document.getElementById('attachment-name');const resize=()=>{box.style.height='auto';box.style.height=`${Math.min(box.scrollHeight,132)}px`};box.addEventListener('input',resize);quickReply?.addEventListener('change',()=>{popover.hidden=true;quickToggle?.setAttribute('aria-expanded','false');resize()});quickToggle?.addEventListener('click',()=>{popover.hidden=!popover.hidden;quickToggle.setAttribute('aria-expanded',String(!popover.hidden));if(!popover.hidden)quickReply?.focus()});document.querySelectorAll('[data-compose-mode]').forEach(button=>button.addEventListener('click',()=>{document.querySelectorAll('[data-compose-mode]').forEach(item=>item.classList.toggle('active',item===button));const note=button.dataset.composeMode==='note';submit.value=note?'note':'reply';submit.classList.toggle('note-mode',note);submit.title=note?'{{"Simpan catatan internal" if lang=="id" else "Save internal note"}}':'{{"Kirim balasan" if lang=="id" else "Send reply"}}';box.placeholder=note?'{{"Tulis catatan internal" if lang=="id" else "Write an internal note"}}':'{{"Ketik pesan" if lang=="id" else "Type a message"}}';box.focus()}));file?.addEventListener('change',()=>{const selected=file.files?.[0];chip.hidden=!selected;if(selected)fileName.textContent=selected.name});document.getElementById('clear-attachment')?.addEventListener('click',()=>{file.value='';chip.hidden=true});document.addEventListener('click',event=>{if(popover&&!popover.hidden&&!popover.contains(event.target)&&event.target!==quickToggle){popover.hidden=true;quickToggle?.setAttribute('aria-expanded','false')}});box.addEventListener('keydown',event=>{if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();composer.requestSubmit(submit)}})})()</script>
+<script src="{{url_for('static',filename='delivery.js',v='1')}}" defer></script>
+<script src="{{url_for('static',filename='chat-appearance.js',v='1')}}" defer></script>
+<script>(()=>{const unit=document.querySelector('select[name="unit_id"]'),assignee=document.querySelector('select[name="assignee"]');if(!unit||!assignee)return;function filter(){const name=unit.selectedOptions[0]?.dataset.unit;for(const option of assignee.options){if(option.value){option.hidden=option.dataset.unit!==name;option.disabled=option.hidden;}}if(assignee.selectedOptions[0]?.disabled)assignee.value='';assignee.disabled=!name;}unit.addEventListener('change',filter);filter();})()</script>
 {% endblock %}

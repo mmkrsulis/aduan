@@ -5,10 +5,15 @@ import time
 
 import requests
 from app import app, create_notification, db as app_db
+import delivery
 
 DB=os.getenv("DATABASE_PATH","/data/aduan.db")
 
 def send(org,phone,message):
+    if delivery.enabled():
+        with app.app_context():
+            delivery.queue_system(app_db(),org['id'],phone,message)
+        return True
     base=org["mpwa_url"] or os.getenv("MPWA_BASE_URL","")
     key=org["mpwa_key"] or os.getenv("MPWA_API_KEY","")
     sender=org["mpwa_sender"] or os.getenv("MPWA_SENDER","")
@@ -24,7 +29,8 @@ def process_one():
     notification=None
     try:
         con.execute("BEGIN IMMEDIATE")
-        chat=con.execute("SELECT * FROM chat_requests WHERE status='pending' AND expires_at<=CURRENT_TIMESTAMP ORDER BY expires_at LIMIT 1").fetchone()
+        scope=" AND EXISTS(SELECT 1 FROM openwa_inbox i WHERE i.org_id=chat_requests.org_id AND i.phone=chat_requests.phone)" if delivery.enabled() else ""
+        chat=con.execute("SELECT * FROM chat_requests WHERE status='pending' AND expires_at<=CURRENT_TIMESTAMP"+scope+" ORDER BY expires_at LIMIT 1").fetchone()
         if not chat: con.commit(); return False
         changed=con.execute("UPDATE chat_requests SET status='processing' WHERE id=? AND status='pending'",(chat["id"],)).rowcount; con.commit()
         if not changed: return True
@@ -47,7 +53,8 @@ def process_idle_one():
     con=sqlite3.connect(DB,timeout=30); con.row_factory=sqlite3.Row; con.execute("PRAGMA busy_timeout=30000")
     try:
         con.execute("BEGIN IMMEDIATE")
-        state=con.execute("""SELECT s.*,f.idle_minutes,f.idle_message_id,f.idle_message_en FROM conversation_states s JOIN flow_configs f ON f.org_id=s.org_id WHERE s.human_takeover=1 AND f.idle_enabled=1 AND f.idle_minutes>=5 AND s.updated_at<=datetime('now','-' || f.idle_minutes || ' minutes') ORDER BY s.updated_at LIMIT 1""").fetchone()
+        scope=" AND EXISTS(SELECT 1 FROM openwa_inbox i WHERE i.org_id=s.org_id AND i.phone=s.phone)" if delivery.enabled() else ""
+        state=con.execute("""SELECT s.*,f.idle_minutes,f.idle_message_id,f.idle_message_en FROM conversation_states s JOIN flow_configs f ON f.org_id=s.org_id WHERE s.human_takeover=1 AND f.idle_enabled=1 AND f.idle_minutes>=5 AND s.updated_at<=datetime('now','-' || f.idle_minutes || ' minutes')"""+scope+" ORDER BY s.updated_at LIMIT 1").fetchone()
         if not state: con.commit(); return False
         changed=con.execute("UPDATE conversation_states SET step='idle_processing' WHERE id=? AND updated_at=?",(state["id"],state["updated_at"])).rowcount; con.commit()
         if not changed: return True

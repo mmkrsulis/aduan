@@ -1,0 +1,54 @@
+services:
+  aduan-hub:
+    environment:
+      OPENWA_DELIVERY: "true"
+      MPWA_BASE_URL: http://host.docker.internal:18081
+      MPWA_API_KEY: dev-openwa
+      MPWA_SENDER: default
+      COOKIE_SECURE: "false"
+      FCM_SERVICE_ACCOUNT_FILE: /run/secrets/disabled-firebase.json
+      PUBLIC_WHATSAPP: ${PUBLIC_WHATSAPP:-6285701972379}
+      OPENWA_CONTROL_URL: http://openwa-core:2785
+      OPENWA_PUBLIC_URL: /settings?section=whatsapp
+      OPENWA_SESSION_ID: e9c1b9e0-223a-4d24-b6f0-2b9a0ba791cc
+      WA_API_KEY: ${WEBHOOK_SECRET}
+
+  chat-timeout-worker:
+    environment:
+      OPENWA_DELIVERY: "true"
+      MPWA_BASE_URL: http://host.docker.internal:18081
+      MPWA_API_KEY: dev-openwa
+      MPWA_SENDER: default
+      FCM_SERVICE_ACCOUNT_FILE: /run/secrets/disabled-firebase.json
+
+  openwa-delivery-worker:
+    build: .
+    container_name: aduan-hub-openwa-delivery
+    restart: unless-stopped
+    command: ["python", "openwa_worker.py"]
+    healthcheck:
+      disable: true
+    environment:
+      DATABASE_PATH: /data/aduan.db
+      OPENWA_URL: http://openwa-core:2785
+      OPENWA_SESSION_ID: e9c1b9e0-223a-4d24-b6f0-2b9a0ba791cc
+      WA_API_KEY: ${WEBHOOK_SECRET}
+      OPENWA_ACK_URL: http://aduan-hub:8080/hooks/openwa/ack
+      OPENWA_INCOMING_URL: http://aduan-hub:8080/hooks/openwa/incoming
+      ADUAN_INTERNAL_URL: http://aduan-hub:8080
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - aduan_data:/data
+    networks:
+      - aduan_net
+    depends_on:
+      aduan-hub:
+        condition: service_healthy
+
+  email-worker:
+    profiles: [production-email]
+    environment:
+      MPWA_BASE_URL: http://host.docker.internal:18081
+      FCM_SERVICE_ACCOUNT_FILE: /run/secrets/disabled-firebase.json

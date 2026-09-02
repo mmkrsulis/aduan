@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="id" style="--accent:{{landing_brand.accent if landing_brand else '#2563eb'}}">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>{{landing_brand.app_name if landing_brand and landing_brand.app_name else 'AduanHub'}} · Layanan aduan terpadu</title>
+  {% if landing_brand and landing_brand.icon %}<link rel="icon" href="{{url_for('media_file',filename=landing_brand.icon)}}">{% endif %}
+  <link rel="stylesheet" href="{{url_for('static',filename='app.css')}}"><link rel="stylesheet" href="{{url_for('static',filename='landing.css',v='20260827-1')}}"><link rel="stylesheet" href="{{url_for('static',filename='public-blue.css',v='1')}}">
+</head>
+<body class="public-landing">
+  <header class="public-nav">
+    <a class="public-brand" href="{{url_for('landing')}}">{% if landing_brand and landing_brand.logo %}<img src="{{url_for('media_file',filename=landing_brand.logo)}}" alt="{{landing_brand.name}}">{% else %}<span>{{((landing_brand.app_name or landing_brand.name) if landing_brand else 'A')[0]}}</span>{% endif %}<div><b>{{landing_brand.app_name if landing_brand and landing_brand.app_name else 'AduanHub'}}</b><small>Layanan aduan terpadu</small></div></a>
+    <div class="public-nav-right"><div class="public-links"><a href="#tentang">Tentang layanan</a><a href="#alur">Alur pengaduan</a><a href="#hubungi">Hubungi kami</a></div><details class="public-menu"><summary aria-label="Buka menu"><i></i><i></i><i></i></summary><nav><a href="#tentang">Tentang</a><a href="#alur">Cara kerja</a><a href="#hubungi">Hubungi layanan</a>{% if session.get('uid') %}<a href="{{url_for('dashboard')}}">Buka dashboard</a>{% else %}<a href="{{url_for('login')}}">Login petugas</a>{% endif %}</nav></details></div>
+  </header>
+  <main class="public-main">
+    <section class="public-hero">
+      <div class="hero-copy"><span class="public-kicker">PORTAL LAYANAN PENGADUAN MASYARAKAT</span><h1>Suara Anda,<br><em>perhatian kami.</em></h1><p>Sampaikan aduan dan pantau tindak lanjutnya. {{landing_brand.app_name if landing_brand and landing_brand.app_name else 'AduanHub'}} menghubungkan Anda dengan tim layanan melalui kanal yang mudah, cepat, dan terdokumentasi.</p>
+        <div class="hero-actions" id="hubungi">{% if service_whatsapp %}<a class="contact-button whatsapp" href="https://wa.me/{{service_whatsapp}}?text={{'Halo, saya ingin menyampaikan aduan.'|urlencode}}" target="_blank" rel="noopener"><span>WA</span><div><small>Kirim melalui</small><b>WhatsApp</b></div></a>{% endif %}{% if service_email %}<a class="contact-button email" href="mailto:{{service_email}}?subject={{'Aduan melalui AduanHub'|urlencode}}"><span>@</span><div><small>Kirim melalui</small><b>Email</b></div></a>{% endif %}{% if not service_whatsapp and not service_email %}<p class="channel-empty">Kanal layanan sedang disiapkan.</p>{% endif %}</div>
+        <p class="privacy-note">Setiap laporan dicatat dan diteruskan kepada unit yang bertanggung jawab.</p>
+      </div>
+      <div class="hero-visual" aria-hidden="true"><div class="visual-heading"><span>TERHUBUNG DALAM SATU LAYANAN</span><b>Setiap aduan punya alur yang jelas.</b></div><div class="visual-card card-inbox"><span>01</span><div><small>ADUAN MASUK</small><b>Diterima oleh sistem</b></div><i>✓</i></div><div class="visual-card card-route"><span>02</span><div><small>DITERUSKAN</small><b>Ke unit terkait</b></div><i>→</i></div><div class="visual-card card-done"><span>03</span><div><small>SELESAI</small><b>Hasil terdokumentasi</b></div><i>✓</i></div><div class="visual-orbit"></div></div>
+    </section>
+    <section class="public-about" id="tentang"><div><span class="public-kicker">TENTANG ADUANHUB</span><h2>Layanan yang lebih terbuka dan terarah.</h2></div><p>AduanHub menyatukan penerimaan laporan, verifikasi, disposisi, percakapan, dan pelaporan dalam satu alur. Masyarakat cukup memilih kanal yang tersedia; tim layanan menangani sisanya secara terukur.</p></section>
+    <section class="public-steps" id="alur"><article><span>01</span><h3>Sampaikan</h3><p>Kirim kronologi melalui WhatsApp atau email layanan.</p></article><article><span>02</span><h3>Diverifikasi</h3><p>Laporan ditinjau dan diteruskan kepada unit yang sesuai.</p></article><article><span>03</span><h3>Ditindaklanjuti</h3><p>Petugas memberikan pembaruan dan jawaban melalui kanal Anda.</p></article></section>
+  </main>
+  <footer class="public-footer"><b>{{landing_brand.app_name if landing_brand and landing_brand.app_name else 'AduanHub'}}</b><span>Platform pengelolaan aduan terpadu{% if landing_brand and landing_brand.name %} · {{landing_brand.name}}{% endif %}</span></footer>
+</body></html>

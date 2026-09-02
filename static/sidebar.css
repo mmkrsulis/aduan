@@ -1,0 +1,44 @@
+:root{--sidebar-wide:248px;--sidebar-rail:76px}
+.shell,aside{transition:grid-template-columns .2s ease,width .2s ease,transform .2s ease}
+.sidebar-toggle{display:grid;flex:none}
+.sidebar-close,.sidebar-backdrop{display:none}
+
+@media(min-width:1101px){
+  html.sidebar-collapsed .shell{grid-template-columns:var(--sidebar-rail) minmax(0,1fr)}
+  html.sidebar-collapsed aside{width:var(--sidebar-rail);padding-left:10px;padding-right:10px}
+  html.sidebar-collapsed aside .brand{justify-content:center;padding:0}
+  html.sidebar-collapsed aside .brand>div,
+  html.sidebar-collapsed aside .sidebar-tools>span,
+  html.sidebar-collapsed aside .theme-switch>b,
+  html.sidebar-collapsed aside .theme-moon,
+  html.sidebar-collapsed aside .profile>div:nth-child(2),
+  html.sidebar-collapsed aside .nav-settings summary>b,
+  html.sidebar-collapsed aside .nav-settings summary>i,
+  html.sidebar-collapsed aside .nav-submenu{display:none}
+  html.sidebar-collapsed aside nav a,
+  html.sidebar-collapsed aside .nav-settings summary{justify-content:center;gap:0;padding-left:0;padding-right:0;font-size:0}
+  html.sidebar-collapsed aside nav a [data-icon],
+  html.sidebar-collapsed aside .nav-settings summary [data-icon]{font-size:14px}
+  html.sidebar-collapsed aside .sidebar-tools{align-items:center}
+  html.sidebar-collapsed aside .theme-switch{width:42px;justify-content:center;padding:0}
+  html.sidebar-collapsed aside .theme-sun{font-size:14px}
+  html.sidebar-collapsed aside .profile{justify-content:center;padding-left:0;padding-right:0;gap:5px}
+  html.sidebar-collapsed aside .profile>a{display:none}
+}
+
+@media(max-width:1100px){
+  .shell{grid-template-columns:1fr}
+  main{grid-column:1}
+  html.sidebar-collapsed .shell{grid-template-columns:1fr}
+  html.sidebar-collapsed aside{width:248px}
+  .grid-main>*{min-width:0;max-width:100%}
+  .table-wrap{max-width:100%;overflow-x:auto}
+  aside{width:248px;z-index:40;transform:translateX(-100%);box-shadow:16px 0 40px #0004}
+  aside.open{transform:none}
+  .sidebar-close{display:grid;place-items:center;position:absolute;top:14px;right:12px;width:36px;height:36px;border:1px solid #ffffff1f;border-radius:9px;background:#ffffff0d;color:#fff;font:300 25px/1 system-ui;cursor:pointer}
+  .sidebar-backdrop{display:block;position:fixed;inset:0;z-index:35;border:0;background:#080b12a8;opacity:0;visibility:hidden;pointer-events:none;transition:opacity .18s ease,visibility .18s ease}
+  .sidebar-drawer-open .sidebar-backdrop{opacity:1;visibility:visible;pointer-events:auto}
+  .sidebar-drawer-open body{overflow:hidden}
+}
+
+@media(prefers-reduced-motion:reduce){.shell,aside,.sidebar-backdrop{transition:none}}
