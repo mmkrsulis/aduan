@@ -128,6 +128,14 @@ class DeliveryTests(unittest.TestCase):
         self.assertEqual(response.mimetype,'image/png')
         self.assertEqual(response.headers['Cache-Control'],'no-store, max-age=0')
 
+    def test_openwa_media_download_uses_archived_message_endpoint(self):
+        gateway=type('MediaResponse',(),{'headers':{'Content-Type':'image/jpeg'},'content':b'jpeg-bytes','raise_for_status':lambda self:None})()
+        environment={'OPENWA_URL':'http://openwa-core:2785','OPENWA_SESSION_ID':'session-id','WA_API_KEY':'test-key'}
+        with patch.dict(os.environ,environment),patch.object(openwa_worker.requests,'get',return_value=gateway) as request:
+            result=openwa_worker.call('getMedia',{'chatId':'628123@c.us','messageId':'ABC123'})
+        self.assertTrue(result.startswith('data:image/jpeg;base64,'))
+        self.assertIn('/api/sessions/session-id/messages/628123%40c.us/ABC123/media',request.call_args.args[0])
+
     def test_whatsapp_disconnect_is_server_side(self):
         with patch.object(application,'openwa_call',return_value=True) as gateway:
             response=self.client.post('/settings/whatsapp/disconnect',headers={'X-CSRF-Token':'csrf-test'})

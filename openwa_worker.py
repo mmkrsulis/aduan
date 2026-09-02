@@ -8,6 +8,7 @@ import time
 import requests
 import delivery
 import json
+from urllib.parse import quote
 
 logging.basicConfig(level=logging.INFO,format='%(asctime)s %(levelname)s %(message)s')
 
@@ -23,6 +24,13 @@ def call(method,args=None):
         response=requests.post(f'{base}/api/sessions/{sid}/messages/{route}',headers=headers,json={'chatId':args['to'],'base64':encoded,'mimetype':mime,'filename':args.get('filename'),'caption':args.get('caption','')[:1024]},timeout=(5,90))
     elif method=='getMessageById':
         response=requests.get(f'{base}/api/sessions/{sid}/messages/{args["messageId"]}',headers=headers,timeout=(5,75))
+    elif method=='getMedia':
+        chat_id=quote(args['chatId'],safe=''); message_id=quote(args['messageId'],safe='')
+        response=requests.get(f'{base}/api/sessions/{sid}/messages/{chat_id}/{message_id}/media',headers=headers,timeout=(5,75))
+        response.raise_for_status()
+        if len(response.content)>8*1024*1024: raise ValueError('Incoming media exceeds 8 MB')
+        mime=response.headers.get('Content-Type','application/octet-stream').split(';',1)[0]
+        return f'data:{mime};base64,'+base64.b64encode(response.content).decode()
     else: raise ValueError('Unsupported OpenWA operation')
     response.raise_for_status()
     data=response.json()
@@ -46,7 +54,7 @@ def process_incoming(con):
     data=json.loads(row['payload']); payload={'id':row['id']}
     if data.get('media'):
         try:
-            encoded=call('decryptMedia',{'message':row['id']})
+            encoded=call('getMedia',{'chatId':data['chat_id'],'messageId':row['id']})
             if isinstance(encoded,str) and encoded.startswith('data:') and len(encoded)<=11*1024*1024:
                 payload['media']=encoded
         except (requests.RequestException,ValueError):

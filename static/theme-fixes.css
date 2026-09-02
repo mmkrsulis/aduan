@@ -176,3 +176,4 @@ html[data-theme="dark"] .service-message-bubble{background:#202c33;color:#e9edef
 .service-chat-input textarea{height:42px;min-height:42px;padding:11px 14px;border-color:var(--line);background:var(--soft)}
 .service-chat-send{display:grid!important;place-items:center;flex:0 0 42px!important;width:42px!important;min-width:42px;height:42px!important;min-height:42px;padding:0!important;aspect-ratio:1;border-radius:50%!important}.service-chat-send>span{display:block;line-height:1;transform:translateX(1px)}
 .service-chat-composer button.loading:after{inset:11px}
+.service-chat-panel:not([hidden]){display:flex;flex-direction:column}.service-chat-panel>header{flex:0 0 68px}.service-chat-list,.service-chat-thread{height:auto;min-height:0;flex:1}.service-chat-composer{flex:0 0 auto}.service-chat-file[hidden]{display:none!important}
