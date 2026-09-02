@@ -146,6 +146,7 @@ def init_db():
       "contacts":{"email":"TEXT"},
       "tickets":{"channel":"TEXT DEFAULT 'whatsapp'","email_subject":"TEXT"},
       "messages":{"attachment_path":"TEXT","attachment_name":"TEXT","attachment_type":"TEXT","delivery_status":"TEXT DEFAULT 'received'","channel":"TEXT DEFAULT 'whatsapp'","external_id":"TEXT"},
+      "units":{"officer_user_id":"INTEGER"},
       "flow_configs":{"forward_template_id":"TEXT","forward_template_en":"TEXT","status_template_id":"TEXT","status_template_en":"TEXT","unavailable_id":"TEXT","unavailable_en":"TEXT","identity_prompt_id":"TEXT","identity_prompt_en":"TEXT","chat_waiting_id":"TEXT","chat_waiting_en":"TEXT","chat_connected_id":"TEXT","chat_connected_en":"TEXT","chat_timeout_id":"TEXT","chat_timeout_en":"TEXT","idle_enabled":"INTEGER DEFAULT 1","idle_minutes":"INTEGER DEFAULT 60","idle_message_id":"TEXT","idle_message_en":"TEXT","menu_items":"TEXT DEFAULT '[]'","ai_enabled":"INTEGER DEFAULT 0","ai_prompt":"TEXT","ai_confidence":"REAL DEFAULT .8","session_timeout_minutes":"INTEGER DEFAULT 30"}
     }
     for table,columns in migrations.items():
@@ -611,7 +612,7 @@ def ticket(tid):
             if not is_central_admin(): return ("Forbidden",403)
             unit=db().execute("SELECT * FROM units WHERE id=? AND org_id=? AND active=1",(request.form.get("unit_id"),session["org_id"])).fetchone()
             if unit:
-                assignee=request.form.get('assignee') or None
+                assignee=unit["officer_user_id"] or request.form.get('assignee') or None
                 if assignee and not db().execute("SELECT 1 FROM users WHERE id=? AND org_id=? AND unit=? AND active=1 AND role IN ('supervisor','agent')",(assignee,session['org_id'],unit['name'])).fetchone():
                     flash('Petugas harus berasal dari unit tujuan.','error'); return redirect(url_for('ticket',tid=tid))
                 if t['status'] in ('resolved','closed'):
@@ -739,8 +740,7 @@ def users():
     if request.method=="POST":
         role=request.form.get("role","agent"); unit=request.form.get("unit","").strip()
         valid_unit=not unit or db().execute("SELECT 1 FROM units WHERE org_id=? AND name=? AND active=1",(session["org_id"],unit)).fetchone()
-        if role in ("supervisor","agent") and not unit: flash("Akun bidang/petugas wajib memiliki unit.","error")
-        elif not valid_unit: flash("Unit tidak valid.","error")
+        if not valid_unit: flash("Unit tidak valid.","error")
         else:
             try: db().execute("INSERT INTO users(org_id,name,email,password,role,unit) VALUES(?,?,?,?,?,?)",(session["org_id"],request.form["name"],request.form["email"].lower(),generate_password_hash(request.form["password"]),role,unit)); db().commit(); audit("user.created","user"); flash("User created","success")
             except sqlite3.IntegrityError: flash("Email already exists","error")
@@ -754,7 +754,9 @@ def toggle_user(uid):
     if not user: return ("Not found",404)
     if uid==session["uid"]: flash("Anda tidak dapat menonaktifkan akun sendiri.","error")
     elif user["role"]=="owner" and user["active"] and db().execute("SELECT count(*) FROM users WHERE org_id=? AND role='owner' AND active=1",(session["org_id"],)).fetchone()[0]<=1: flash("Owner aktif terakhir tidak dapat dinonaktifkan.","error")
-    else: db().execute("UPDATE users SET active=1-active WHERE id=?",(uid,)); db().commit(); audit("user.toggled","user",uid); flash("Status pengguna diperbarui.","success")
+    else:
+        if user["active"]: db().execute("UPDATE units SET officer_user_id=NULL WHERE org_id=? AND officer_user_id=?",(session["org_id"],uid))
+        db().execute("UPDATE users SET active=1-active WHERE id=?",(uid,)); db().commit(); audit("user.toggled","user",uid); flash("Status pengguna diperbarui.","success")
     return redirect(url_for("users"))
 
 @app.post("/users/<int:uid>/update")
@@ -768,7 +770,6 @@ def update_user(uid):
     if user["role"]=="owner" and role!="owner" and db().execute("SELECT count(*) FROM users WHERE org_id=? AND role='owner'",(session["org_id"],)).fetchone()[0]<=1: flash("Owner terakhir tidak dapat diubah perannya.","error"); return redirect(url_for("users"))
     password=request.form.get("password","")
     unit=request.form.get("unit","").strip()
-    if role in ("supervisor","agent") and not unit: flash("Akun bidang/petugas wajib memiliki unit.","error"); return redirect(url_for("users"))
     if unit and not db().execute("SELECT 1 FROM units WHERE org_id=? AND name=? AND active=1",(session["org_id"],unit)).fetchone(): flash("Unit tidak valid.","error"); return redirect(url_for("users"))
     if password and len(password)<8: flash("Kata sandi baru minimal 8 karakter.","error"); return redirect(url_for("users"))
     try:
@@ -788,7 +789,7 @@ def delete_user(uid):
     if uid==session["uid"]: flash("Anda tidak dapat menghapus akun sendiri.","error")
     elif user["role"]=="owner" and db().execute("SELECT count(*) FROM users WHERE org_id=? AND role='owner'",(session["org_id"],)).fetchone()[0]<=1: flash("Owner terakhir tidak dapat dihapus.","error")
     else:
-        db().execute("UPDATE tickets SET assignee_id=NULL WHERE assignee_id=?",(uid,)); db().execute("DELETE FROM notifications WHERE user_id=?",(uid,)); db().execute("UPDATE audit_logs SET user_id=NULL WHERE user_id=?",(uid,)); db().execute("DELETE FROM users WHERE id=?",(uid,)); db().commit(); audit("user.deleted","user",uid,{"email":user["email"]}); flash("Pengguna berhasil dihapus.","success")
+        db().execute("UPDATE tickets SET assignee_id=NULL WHERE assignee_id=?",(uid,)); db().execute("UPDATE units SET officer_user_id=NULL WHERE org_id=? AND officer_user_id=?",(session["org_id"],uid)); db().execute("DELETE FROM notifications WHERE user_id=?",(uid,)); db().execute("UPDATE audit_logs SET user_id=NULL WHERE user_id=?",(uid,)); db().execute("DELETE FROM users WHERE id=?",(uid,)); db().commit(); audit("user.deleted","user",uid,{"email":user["email"]}); flash("Pengguna berhasil dihapus.","success")
     return redirect(url_for("users"))
 
 @app.get("/settings/whatsapp/status")
@@ -915,7 +916,7 @@ def settings():
         try: ticket_format.format_map({"prefix":prefix,"year":2026,"month":"08","day":"13","number":1})
         except (KeyError,ValueError): flash("Format nomor aduan tidak valid.","error"); return redirect(url_for("settings",section="general"))
         db().execute("UPDATE organizations SET name=?,app_name=?,accent=?,terminology=?,timezone=?,ticket_prefix=?,ticket_format=?,logo=?,icon=?,complaint_count_offset=?,resolved_count_offset=? WHERE id=?",(request.form["name"],request.form.get("app_name","AduanHub").strip()[:60] or "AduanHub",accent,request.form["terminology"],request.form.get("timezone","Asia/Jakarta"),prefix,ticket_format,logo,icon,complaint_offset,resolved_offset,session["org_id"])); db().commit(); session["org_name"]=request.form["name"]; audit("organization.updated","organization",session["org_id"]); flash("Pengaturan berhasil disimpan","success")
-    org=db().execute("SELECT * FROM organizations WHERE id=?",(session["org_id"],)).fetchone(); units=db().execute("SELECT * FROM units WHERE org_id=? ORDER BY name",(session["org_id"],)).fetchall(); categories=db().execute("SELECT c.*,(SELECT count(*) FROM tickets t WHERE t.org_id=c.org_id AND t.category=c.name) usage_count FROM categories c WHERE c.org_id=? ORDER BY c.name",(session["org_id"],)).fetchall(); quick_replies=db().execute("SELECT * FROM quick_replies WHERE org_id=? ORDER BY position,id",(session["org_id"],)).fetchall(); flow=db().execute("SELECT * FROM flow_configs WHERE org_id=?",(session["org_id"],)).fetchone(); return render_template("settings.html",org=org,email=email_config(session["org_id"]),units=units,categories=categories,quick_replies=quick_replies,flow=flow,section=section,openwa_public_url=OPENWA_PUBLIC_URL,openwa_qr_url=url_for('whatsapp_qr'),openwa_delivery=delivery.enabled())
+    org=db().execute("SELECT * FROM organizations WHERE id=?",(session["org_id"],)).fetchone(); units=db().execute("SELECT un.*,u.name officer_user_name,u.email officer_user_email FROM units un LEFT JOIN users u ON u.id=un.officer_user_id WHERE un.org_id=? ORDER BY un.name",(session["org_id"],)).fetchall(); unit_users=db().execute("SELECT id,name,email,unit FROM users WHERE org_id=? AND active=1 AND role IN ('supervisor','agent') ORDER BY name",(session["org_id"],)).fetchall(); categories=db().execute("SELECT c.*,(SELECT count(*) FROM tickets t WHERE t.org_id=c.org_id AND t.category=c.name) usage_count FROM categories c WHERE c.org_id=? ORDER BY c.name",(session["org_id"],)).fetchall(); quick_replies=db().execute("SELECT * FROM quick_replies WHERE org_id=? ORDER BY position,id",(session["org_id"],)).fetchall(); flow=db().execute("SELECT * FROM flow_configs WHERE org_id=?",(session["org_id"],)).fetchone(); return render_template("settings.html",org=org,email=email_config(session["org_id"]),units=units,unit_users=unit_users,categories=categories,quick_replies=quick_replies,flow=flow,section=section,openwa_public_url=OPENWA_PUBLIC_URL,openwa_qr_url=url_for('whatsapp_qr'),openwa_delivery=delivery.enabled())
 
 @app.post("/settings/quick-replies")
 @login_required
@@ -984,8 +985,12 @@ def delete_category(category_id):
 @login_required
 @roles("owner","admin")
 def create_unit():
+    officer_user_id=request.form.get("officer_user_id") or None
+    if officer_user_id and not db().execute("SELECT 1 FROM users WHERE id=? AND org_id=? AND active=1 AND role IN ('supervisor','agent')",(officer_user_id,session["org_id"])).fetchone(): flash("Akun petugas tidak valid.","error"); return redirect(url_for("settings",section="units"))
     try:
-        db().execute("INSERT INTO units(org_id,name,officer_name,officer_phone) VALUES(?,?,?,?)",(session["org_id"],request.form["name"],request.form.get("officer_name"),request.form.get("officer_phone"))); db().commit(); audit("unit.created","unit"); flash("Responsible unit added","success")
+        name=request.form["name"].strip(); db().execute("INSERT INTO units(org_id,name,officer_name,officer_phone,officer_user_id) VALUES(?,?,?,?,?)",(session["org_id"],name,request.form.get("officer_name"),request.form.get("officer_phone"),officer_user_id))
+        if officer_user_id: db().execute("UPDATE users SET unit=? WHERE id=? AND org_id=?",(name,officer_user_id,session["org_id"]))
+        db().commit(); audit("unit.created","unit"); flash("Unit penanggung jawab ditambahkan.","success")
     except sqlite3.IntegrityError: flash("Unit name already exists","error")
     return redirect(url_for("settings",section="units"))
 
@@ -998,7 +1003,11 @@ def update_unit(unit_id):
     name=request.form["name"].strip(); officer=request.form.get("officer_name","").strip(); phone=request.form.get("officer_phone","").strip()
     if not name: flash("Unit name is required","error"); return redirect(url_for("settings",section="units"))
     try:
-        db().execute("UPDATE units SET name=?,officer_name=?,officer_phone=?,active=1 WHERE id=? AND org_id=?",(name,officer,phone,unit_id,session["org_id"])); db().execute("UPDATE tickets SET unit=? WHERE org_id=? AND unit=?",(name,session["org_id"],unit["name"])); db().execute("UPDATE users SET unit=? WHERE org_id=? AND unit=?",(name,session["org_id"],unit["name"])); db().commit(); audit("unit.updated","unit",unit_id,{"old_name":unit["name"],"new_name":name}); flash("Responsible unit updated","success")
+        officer_user_id=request.form.get("officer_user_id") or None
+        if officer_user_id and not db().execute("SELECT 1 FROM users WHERE id=? AND org_id=? AND active=1 AND role IN ('supervisor','agent')",(officer_user_id,session["org_id"])).fetchone(): flash("Akun petugas tidak valid.","error"); return redirect(url_for("settings",section="units"))
+        db().execute("UPDATE units SET name=?,officer_name=?,officer_phone=?,officer_user_id=?,active=1 WHERE id=? AND org_id=?",(name,officer,phone,officer_user_id,unit_id,session["org_id"])); db().execute("UPDATE tickets SET unit=? WHERE org_id=? AND unit=?",(name,session["org_id"],unit["name"])); db().execute("UPDATE users SET unit=? WHERE org_id=? AND unit=?",(name,session["org_id"],unit["name"]));
+        if officer_user_id: db().execute("UPDATE users SET unit=? WHERE id=? AND org_id=?",(name,officer_user_id,session["org_id"]))
+        db().commit(); audit("unit.updated","unit",unit_id,{"old_name":unit["name"],"new_name":name}); flash("Unit penanggung jawab diperbarui.","success")
     except sqlite3.IntegrityError: flash("Unit name already exists","error")
     return redirect(url_for("settings",section="units"))
 
@@ -1357,7 +1366,7 @@ def api_ticket_detail(tid):
 def api_assignment_options():
     u=g.api_user
     if u["role"] not in ("owner","admin"): return jsonify(error="forbidden"),403
-    units=db().execute("SELECT id,name,officer_name,officer_phone FROM units WHERE org_id=? AND active=1 ORDER BY name",(u["org_id"],)).fetchall(); users=db().execute("SELECT id,name,role,unit FROM users WHERE org_id=? AND active=1 AND role IN ('supervisor','agent') ORDER BY unit,name",(u["org_id"],)).fetchall()
+    units=db().execute("SELECT id,name,officer_name,officer_phone,officer_user_id FROM units WHERE org_id=? AND active=1 ORDER BY name",(u["org_id"],)).fetchall(); users=db().execute("SELECT id,name,role,unit FROM users WHERE org_id=? AND active=1 AND role IN ('supervisor','agent') ORDER BY unit,name",(u["org_id"],)).fetchall()
     return jsonify(units=[dict(row) for row in units],users=[dict(row) for row in users])
 
 @app.post("/api/v1/tickets/<int:tid>/assign")
@@ -1367,7 +1376,7 @@ def api_ticket_assign(tid):
     if u["role"] not in ("owner","admin"): return jsonify(error="forbidden"),403
     t=db().execute("SELECT t.*,c.name contact,c.location FROM tickets t JOIN contacts c ON c.id=t.contact_id WHERE t.id=? AND t.org_id=?",(tid,u["org_id"])).fetchone(); body=request.get_json(silent=True) or {}; unit=db().execute("SELECT * FROM units WHERE id=? AND org_id=? AND active=1",(body.get("unit_id"),u["org_id"])).fetchone()
     if not t or not unit: return jsonify(error="not_found"),404
-    assignee=body.get("assignee_id")
+    assignee=unit["officer_user_id"] or body.get("assignee_id")
     if assignee and not db().execute("SELECT 1 FROM users WHERE id=? AND org_id=? AND unit=? AND active=1 AND role IN ('supervisor','agent')",(assignee,u["org_id"],unit["name"])).fetchone(): return jsonify(error="invalid_assignee",message="Petugas harus berasal dari unit yang dipilih."),400
     db().execute("UPDATE tickets SET unit=?,assignee_id=?,status='assigned',updated_at=CURRENT_TIMESTAMP WHERE id=?",(unit["name"],assignee,tid)); notify_assigned_users(u["org_id"],tid,"Disposisi aduan baru",f"{t['code']} telah diteruskan ke {unit['name']}. Login untuk membaca dan menanggapi.",unit["name"],int(assignee) if assignee else None)
     if unit["officer_phone"]:

@@ -93,14 +93,13 @@
 <span>02</span>
 <div>
 <h3>{{'Disposisikan aduan' if lang=='id' else 'Assign complaint'}}</h3>
-<p>{{'Tentukan unit dan petugas penanggung jawab' if lang=='id' else 'Assign the responsible unit and officer'}}</p>
+<p>{{'Pilih unit; akun petugas utama ditetapkan otomatis' if lang=='id' else 'Select a unit; its primary officer is assigned automatically'}}</p>
 </div>
 </div>
 <label>{{'Unit / bidang tujuan' if lang=='id' else 'Responsible unit'}}<select name="unit_id">
 <option value="">{{'Pilih unit' if lang=='id' else 'Select unit'}}</option>{% for unit in units if unit.active %}<option value="{{unit.id}}" data-unit="{{unit.name}}" {% if t.unit==unit.name %}selected{% endif %}>{{unit.name}}</option>{% endfor %}</select>
 </label>
-<label>Petugas (opsional)<select name="assignee"><option value="">Tim unit — tanpa petugas khusus</option>{% for u in users %}<option value="{{u.id}}" data-unit="{{u.unit}}" {% if t.assignee_id==u.id %}selected{% endif %}>{{u.name}} · {{u.role}}</option>{% endfor %}</select></label>
-<p class="assignment-help">Disposisi memberikan akses kepada unit/petugas tujuan dan mengubah status menjadi Ditugaskan.</p>
+<p class="assignment-help">Akun utama pada unit otomatis memperoleh akses dan menerima tautan melalui WhatsApp.</p>
 <button name="action" value="forward" class="secondary wide">{{'Simpan disposisi' if lang=='id' else 'Save assignment'}}</button>
 </section>{% endif %}
     <section class="side-section">

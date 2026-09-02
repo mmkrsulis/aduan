@@ -237,11 +237,28 @@ class DeliveryTests(unittest.TestCase):
     def test_assignment_clears_old_officer(self):
         unit=self.con.execute('SELECT * FROM units WHERE org_id=? AND active=1 LIMIT 1',(self.ticket['org_id'],)).fetchone()
         self.assertIsNotNone(unit)
+        self.con.execute('UPDATE units SET officer_user_id=NULL WHERE id=?',(unit['id'],))
         self.con.execute('UPDATE tickets SET assignee_id=(SELECT id FROM users LIMIT 1) WHERE id=?',(self.ticket['id'],)); self.con.commit()
         with patch.object(application,'send_mpwa',return_value=(False,'disabled')),patch.object(application,'notify_assigned_users'):
             response=self.client.post(f"/tickets/{self.ticket['id']}",data={'action':'forward','unit_id':str(unit['id']),'assignee':''},headers={'X-CSRF-Token':'csrf-test'})
         self.assertEqual(response.status_code,302)
         row=self.con.execute('SELECT unit,assignee_id,status FROM tickets WHERE id=?',(self.ticket['id'],)).fetchone()
         self.assertEqual(tuple(row),(unit['name'],None,'assigned'))
+
+    def test_assignment_uses_unit_primary_login_account(self):
+        unit=self.con.execute('SELECT * FROM units WHERE org_id=? AND active=1 LIMIT 1',(self.ticket['org_id'],)).fetchone()
+        officer=self.con.execute("SELECT id FROM users WHERE org_id=? AND active=1 AND role IN ('supervisor','agent') LIMIT 1",(self.ticket['org_id'],)).fetchone()
+        self.assertIsNotNone(unit); self.assertIsNotNone(officer)
+        original=unit['officer_user_id']; original_user_unit=self.con.execute('SELECT unit FROM users WHERE id=?',(officer['id'],)).fetchone()[0]
+        try:
+            self.con.execute('UPDATE units SET officer_user_id=? WHERE id=?',(officer['id'],unit['id'])); self.con.execute('UPDATE users SET unit=? WHERE id=?',(unit['name'],officer['id'])); self.con.commit()
+            with patch.object(application,'send_mpwa',return_value=(True,'sent')),patch.object(application,'notify_assigned_users') as notify:
+                response=self.client.post(f"/tickets/{self.ticket['id']}",data={'action':'forward','unit_id':str(unit['id'])},headers={'X-CSRF-Token':'csrf-test'})
+            self.assertEqual(response.status_code,302)
+            assigned=self.con.execute('SELECT assignee_id FROM tickets WHERE id=?',(self.ticket['id'],)).fetchone()[0]
+            self.assertEqual(assigned,officer['id'])
+            self.assertEqual(notify.call_args.args[-1],officer['id'])
+        finally:
+            self.con.execute('UPDATE units SET officer_user_id=? WHERE id=?',(original,unit['id'])); self.con.execute('UPDATE users SET unit=? WHERE id=?',(original_user_unit,officer['id'])); self.con.commit()
 
 if __name__=='__main__': unittest.main()
