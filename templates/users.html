@@ -10,7 +10,7 @@
 <div class="avatar">{{u.name[0]}}</div>
 <div class="user-identity">
 <b>{{u.name}}{% if u.id==me.uid %}<em>{{'Anda' if lang=='id' else 'You'}}</em>{% endif %}</b>
-<span>{{u.email}}</span>
+<span>{{u.email}}{% if u.phone %} · WA {{u.phone}}{% endif %}</span>
 <small>{{u.unit or ('Tanpa unit' if lang=='id' else 'No unit')}} · {{'Login terakhir' if lang=='id' else 'Last login'}}: {{localdt(u.last_login)}}</small>
 </div>
 <span class="role">{{u.role}}</span>
@@ -39,6 +39,8 @@
 </label>
 <label>Email<input name="email" type="email" value="{{u.email}}" required>
 </label>
+<label>{{'Nomor WhatsApp' if lang=='id' else 'WhatsApp number'}}<input name="phone" value="{{u.phone or ''}}" inputmode="numeric" placeholder="62812…">
+</label>
 <label>{{'Peran' if lang=='id' else 'Role'}}<select name="role">{% for role in ['owner','admin','supervisor','agent','viewer'] %}<option value="{{role}}" {% if u.role==role %}selected{% endif %}>{{role|title}}</option>{% endfor %}</select>
 </label>
 <label>{{'Unit / bidang' if lang=='id' else 'Unit / department'}}<select name="unit"><option value="">{{'Tanpa unit' if lang=='id' else 'No unit'}}</option>{% for unit in units %}<option value="{{unit.name}}" {% if u.unit==unit.name %}selected{% endif %}>{{unit.name}}</option>{% endfor %}</select>
@@ -65,6 +67,8 @@
 <label>{{'Nama lengkap' if lang=='id' else 'Full name'}}<input name="name" required>
 </label>
 <label>Email<input name="email" type="email" required>
+</label>
+<label>{{'Nomor WhatsApp' if lang=='id' else 'WhatsApp number'}}<input name="phone" inputmode="numeric" placeholder="62812…" required>
 </label>
 <label>{{'Kata sandi sementara' if lang=='id' else 'Temporary password'}}<input name="password" type="password" minlength="8" required>
 </label>
