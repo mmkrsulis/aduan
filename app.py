@@ -96,7 +96,7 @@ def csrf_token():
 def csrf_protect():
     # Credentials authenticate login; exempt it to avoid stale-token errors after
     # logout, browser back/forward cache, or signing in from multiple tabs.
-    if request.method=="POST" and request.endpoint not in ("webhook","login","openwa_ack","openwa_incoming","openwa_process") and not request.path.startswith("/api/"):
+    if request.method=="POST" and request.endpoint not in ("webhook","login","forgot_password","reset_password","openwa_ack","openwa_incoming","openwa_process") and not request.path.startswith("/api/"):
         expected=session.get("csrf",""); supplied=request.form.get("csrf_token","") or request.headers.get("X-CSRF-Token","")
         if not expected or not secrets.compare_digest(expected,supplied): return ("Invalid or expired form token",400)
 
@@ -118,6 +118,7 @@ CREATE TABLE IF NOT EXISTS chat_requests(id INTEGER PRIMARY KEY, org_id INTEGER 
 CREATE TABLE IF NOT EXISTS mobile_pairings(id INTEGER PRIMARY KEY, org_id INTEGER NOT NULL, user_id INTEGER NOT NULL, token_hash TEXT UNIQUE NOT NULL, expires_at TEXT NOT NULL, used_at TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(org_id) REFERENCES organizations(id), FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE);
 CREATE TABLE IF NOT EXISTS mobile_devices(id INTEGER PRIMARY KEY, org_id INTEGER NOT NULL, user_id INTEGER NOT NULL, name TEXT NOT NULL, platform TEXT DEFAULT 'android', last_seen_at TEXT, revoked_at TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(org_id) REFERENCES organizations(id), FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE);
 CREATE TABLE IF NOT EXISTS mobile_push_tokens(id INTEGER PRIMARY KEY, org_id INTEGER NOT NULL, user_id INTEGER NOT NULL, token TEXT UNIQUE NOT NULL, platform TEXT DEFAULT 'android', updated_at TEXT DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(org_id) REFERENCES organizations(id), FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE);
+CREATE TABLE IF NOT EXISTS password_reset_codes(id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL, code_hash TEXT NOT NULL, expires_at TEXT NOT NULL, used_at TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE);
 CREATE TABLE IF NOT EXISTS email_configs(id INTEGER PRIMARY KEY, org_id INTEGER UNIQUE NOT NULL, enabled INTEGER DEFAULT 0, address TEXT, sender_name TEXT, imap_host TEXT, imap_port INTEGER DEFAULT 993, imap_security TEXT DEFAULT 'ssl', imap_username TEXT, imap_password TEXT, imap_folder TEXT DEFAULT 'INBOX', smtp_host TEXT, smtp_port INTEGER DEFAULT 587, smtp_security TEXT DEFAULT 'starttls', smtp_username TEXT, smtp_password TEXT, signature TEXT, auto_reply INTEGER DEFAULT 1, last_checked_at TEXT, last_error TEXT, updated_at TEXT DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(org_id) REFERENCES organizations(id));
 CREATE TABLE IF NOT EXISTS email_receipts(id INTEGER PRIMARY KEY, org_id INTEGER NOT NULL, message_id TEXT NOT NULL, ticket_id INTEGER, received_at TEXT DEFAULT CURRENT_TIMESTAMP, UNIQUE(org_id,message_id), FOREIGN KEY(org_id) REFERENCES organizations(id), FOREIGN KEY(ticket_id) REFERENCES tickets(id) ON DELETE SET NULL);
 """
@@ -452,12 +453,40 @@ def health(): return jsonify(status="ok")
 @app.route("/login",methods=["GET","POST"])
 def login():
     if request.method=="POST":
-        u=db().execute("SELECT u.*,o.name org_name FROM users u JOIN organizations o ON o.id=u.org_id WHERE email=? AND active=1",(request.form["email"].lower(),)).fetchone()
+        identity=(request.form.get("identity") or request.form.get("email") or "").strip().lower(); phone=normalize_whatsapp(identity)
+        u=db().execute("SELECT u.*,o.name org_name FROM users u JOIN organizations o ON o.id=u.org_id WHERE (lower(u.email)=? OR u.phone=?) AND u.active=1",(identity,phone)).fetchone()
         if u and check_password_hash(u["password"],request.form["password"]):
             remember=request.form.get("remember")=="1"; session.clear(); session.permanent=remember; session.update(uid=u["id"],org_id=u["org_id"],name=u["name"],role=u["role"],unit=u["unit"] or "",org_name=u["org_name"],lang="id"); db().execute("UPDATE users SET last_login=CURRENT_TIMESTAMP WHERE id=?",(u["id"],)); db().commit(); return redirect(url_for("dashboard"))
         flash("Invalid credentials","error")
     login_brand=db().execute("SELECT name,app_name,logo,icon,accent,terminology FROM organizations ORDER BY id LIMIT 1").fetchone()
     return render_template("login.html",login_brand=login_brand)
+
+@app.route("/forgot-password",methods=["GET","POST"])
+def forgot_password():
+    login_brand=db().execute("SELECT name,app_name,logo,icon,accent,terminology FROM organizations ORDER BY id LIMIT 1").fetchone()
+    if request.method=="POST":
+        phone=normalize_whatsapp(request.form.get("phone","")); user=db().execute("SELECT * FROM users WHERE phone=? AND active=1",(phone,)).fetchone()
+        if user:
+            recent=db().execute("SELECT 1 FROM password_reset_codes WHERE user_id=? AND created_at>datetime('now','-1 minute')",(user["id"],)).fetchone()
+            if not recent:
+                code=f"{secrets.randbelow(1000000):06d}"; expires=(datetime.utcnow()+timedelta(minutes=10)).strftime("%Y-%m-%d %H:%M:%S")
+                db().execute("UPDATE password_reset_codes SET used_at=CURRENT_TIMESTAMP WHERE user_id=? AND used_at IS NULL",(user["id"],)); db().execute("INSERT INTO password_reset_codes(user_id,code_hash,expires_at) VALUES(?,?,?)",(user["id"],generate_password_hash(code),expires)); db().commit()
+                org=db().execute("SELECT * FROM organizations WHERE id=?",(user["org_id"],)).fetchone(); send_mpwa_for_org(org,phone,f"Kode OTP reset password {org['app_name'] or 'AduanHub'}: {code}\nBerlaku 10 menit. Jangan berikan kode ini kepada siapa pun.")
+        session["reset_phone"]=phone; flash("Jika nomor terdaftar, kode OTP telah dikirim melalui WhatsApp.","success"); return redirect(url_for("reset_password"))
+    return render_template("forgot_password.html",login_brand=login_brand)
+
+@app.route("/reset-password",methods=["GET","POST"])
+def reset_password():
+    login_brand=db().execute("SELECT name,app_name,logo,icon,accent,terminology FROM organizations ORDER BY id LIMIT 1").fetchone(); phone=session.get("reset_phone","")
+    if request.method=="POST":
+        user=db().execute("SELECT * FROM users WHERE phone=? AND active=1",(phone,)).fetchone(); row=db().execute("SELECT * FROM password_reset_codes WHERE user_id=? AND used_at IS NULL AND expires_at>CURRENT_TIMESTAMP ORDER BY id DESC LIMIT 1",(user["id"],)).fetchone() if user else None
+        password=request.form.get("password","")
+        if not row or not check_password_hash(row["code_hash"],request.form.get("code","")): flash("Kode OTP salah atau sudah kedaluwarsa.","error")
+        elif len(password)<8: flash("Password baru minimal 8 karakter.","error")
+        elif password!=request.form.get("confirm_password"): flash("Konfirmasi password tidak sama.","error")
+        else:
+            db().execute("UPDATE users SET password=? WHERE id=?",(generate_password_hash(password),user["id"])); db().execute("UPDATE password_reset_codes SET used_at=CURRENT_TIMESTAMP WHERE id=?",(row["id"],)); db().commit(); session.pop("reset_phone",None); flash("Password berhasil diubah. Silakan masuk.","success"); return redirect(url_for("login"))
+    return render_template("reset_password.html",login_brand=login_brand,phone=phone)
 
 @app.route("/logout")
 def logout(): session.clear(); return redirect(url_for("login"))
@@ -988,12 +1017,17 @@ def delete_category(category_id):
 @login_required
 @roles("owner","admin")
 def create_unit():
-    officer_user_id=request.form.get("officer_user_id") or None
-    if officer_user_id and not db().execute("SELECT 1 FROM users WHERE id=? AND org_id=? AND active=1 AND role IN ('supervisor','agent')",(officer_user_id,session["org_id"])).fetchone(): flash("Akun petugas tidak valid.","error"); return redirect(url_for("settings",section="units"))
+    name=request.form.get("name","").strip(); phone=normalize_whatsapp(request.form.get("phone","") or request.form.get("officer_phone",""))
+    if not name or not phone: flash("Nama bidang dan nomor WhatsApp wajib diisi.","error"); return redirect(url_for("settings",section="units"))
     try:
-        name=request.form["name"].strip(); db().execute("INSERT INTO units(org_id,name,officer_name,officer_phone,officer_user_id) VALUES(?,?,?,?,?)",(session["org_id"],name,request.form.get("officer_name"),request.form.get("officer_phone"),officer_user_id))
-        if officer_user_id: db().execute("UPDATE users SET unit=? WHERE id=? AND org_id=?",(name,officer_user_id,session["org_id"]))
+        existing=db().execute("SELECT * FROM users WHERE phone=?",(phone,)).fetchone()
+        if existing and existing["org_id"]!=session["org_id"]: flash("Nomor WhatsApp sudah digunakan pada organisasi lain.","error"); return redirect(url_for("settings",section="units"))
+        if existing: officer_user_id=existing["id"]; db().execute("UPDATE users SET unit=?,active=1 WHERE id=?",(name,officer_user_id))
+        else:
+            email=f"wa-{session['org_id']}-{phone}@aduanhub.local"; officer_user_id=db().execute("INSERT INTO users(org_id,name,email,password,role,unit,phone) VALUES(?,?,?,?,?,?,?)",(session["org_id"],f"Petugas {name}",email,generate_password_hash(secrets.token_urlsafe(24)),"agent",name,phone)).lastrowid
+        db().execute("INSERT INTO units(org_id,name,officer_name,officer_phone,officer_user_id) VALUES(?,?,?,?,?)",(session["org_id"],name,f"Petugas {name}",phone,officer_user_id))
         db().commit(); audit("unit.created","unit"); flash("Unit penanggung jawab ditambahkan.","success")
+        org=db().execute("SELECT * FROM organizations WHERE id=?",(session["org_id"],)).fetchone(); send_mpwa_for_org(org,phone,f"Akun {org['app_name'] or 'AduanHub'} untuk bidang {name} telah dibuat.\n\nNomor login: {phone}\nBuat password melalui:\n{request.url_root.rstrip('/')}{url_for('forgot_password')}")
     except sqlite3.IntegrityError: flash("Unit name already exists","error")
     return redirect(url_for("settings",section="units"))
 
@@ -1003,13 +1037,14 @@ def create_unit():
 def update_unit(unit_id):
     unit=db().execute("SELECT * FROM units WHERE id=? AND org_id=?",(unit_id,session["org_id"])).fetchone()
     if not unit: return ("Not found",404)
-    name=request.form["name"].strip(); officer=request.form.get("officer_name","").strip(); phone=request.form.get("officer_phone","").strip()
-    if not name: flash("Unit name is required","error"); return redirect(url_for("settings",section="units"))
+    name=request.form["name"].strip(); phone=normalize_whatsapp(request.form.get("phone","") or request.form.get("officer_phone",""))
+    if not name or not phone: flash("Nama bidang dan nomor WhatsApp wajib diisi.","error"); return redirect(url_for("settings",section="units"))
     try:
-        officer_user_id=request.form.get("officer_user_id") or None
-        if officer_user_id and not db().execute("SELECT 1 FROM users WHERE id=? AND org_id=? AND active=1 AND role IN ('supervisor','agent')",(officer_user_id,session["org_id"])).fetchone(): flash("Akun petugas tidak valid.","error"); return redirect(url_for("settings",section="units"))
-        db().execute("UPDATE units SET name=?,officer_name=?,officer_phone=?,officer_user_id=?,active=1 WHERE id=? AND org_id=?",(name,officer,phone,officer_user_id,unit_id,session["org_id"])); db().execute("UPDATE tickets SET unit=? WHERE org_id=? AND unit=?",(name,session["org_id"],unit["name"])); db().execute("UPDATE users SET unit=? WHERE org_id=? AND unit=?",(name,session["org_id"],unit["name"]));
-        if officer_user_id: db().execute("UPDATE users SET unit=? WHERE id=? AND org_id=?",(name,officer_user_id,session["org_id"]))
+        officer_user_id=unit["officer_user_id"]
+        if officer_user_id: db().execute("UPDATE users SET unit=?,phone=? WHERE id=? AND org_id=?",(name,phone,officer_user_id,session["org_id"]))
+        else:
+            email=f"wa-{session['org_id']}-{phone}@aduanhub.local"; officer_user_id=db().execute("INSERT INTO users(org_id,name,email,password,role,unit,phone) VALUES(?,?,?,?,?,?,?)",(session["org_id"],f"Petugas {name}",email,generate_password_hash(secrets.token_urlsafe(24)),"agent",name,phone)).lastrowid
+        db().execute("UPDATE units SET name=?,officer_name=?,officer_phone=?,officer_user_id=?,active=1 WHERE id=? AND org_id=?",(name,f"Petugas {name}",phone,officer_user_id,unit_id,session["org_id"])); db().execute("UPDATE tickets SET unit=? WHERE org_id=? AND unit=?",(name,session["org_id"],unit["name"])); db().execute("UPDATE users SET unit=? WHERE org_id=? AND unit=?",(name,session["org_id"],unit["name"]));
         db().commit(); audit("unit.updated","unit",unit_id,{"old_name":unit["name"],"new_name":name}); flash("Unit penanggung jawab diperbarui.","success")
     except sqlite3.IntegrityError: flash("Unit name already exists","error")
     return redirect(url_for("settings",section="units"))

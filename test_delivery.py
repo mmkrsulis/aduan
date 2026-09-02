@@ -262,4 +262,28 @@ class DeliveryTests(unittest.TestCase):
         finally:
             self.con.execute('UPDATE units SET officer_user_id=? WHERE id=?',(original,unit['id'])); self.con.execute('UPDATE users SET unit=?,phone=? WHERE id=?',(original_user['unit'],original_user['phone'],officer['id'])); self.con.commit()
 
+    def test_create_unit_also_creates_whatsapp_login(self):
+        name='Bidang '+os.urandom(3).hex(); phone='628199'+str(int.from_bytes(os.urandom(3),'big')).zfill(8)
+        with patch.object(application,'send_mpwa_for_org',return_value=(True,'sent')) as sender:
+            response=self.client.post('/units',data={'name':name,'phone':phone},headers={'X-CSRF-Token':'csrf-test'})
+        self.assertEqual(response.status_code,302)
+        unit=self.con.execute('SELECT * FROM units WHERE name=?',(name,)).fetchone(); user=self.con.execute('SELECT * FROM users WHERE id=?',(unit['officer_user_id'],)).fetchone()
+        self.assertEqual((user['phone'],user['unit'],user['role']),(phone,name,'agent')); sender.assert_called_once()
+        self.con.execute('DELETE FROM units WHERE id=?',(unit['id'],)); self.con.execute('DELETE FROM users WHERE id=?',(user['id'],)); self.con.commit()
+
+    def test_whatsapp_otp_resets_password(self):
+        user=self.con.execute("SELECT * FROM users WHERE org_id=? AND role='agent' LIMIT 1",(self.ticket['org_id'],)).fetchone(); original=(user['phone'],user['password'])
+        self.con.execute("UPDATE users SET phone='628123450000' WHERE id=?",(user['id'],)); self.con.commit()
+        with self.client.session_transaction() as current: current.clear()
+        try:
+            with patch.object(application.secrets,'randbelow',return_value=123456),patch.object(application,'send_mpwa_for_org',return_value=(True,'sent')) as sender:
+                response=self.client.post('/forgot-password',data={'phone':'08123450000'})
+            self.assertEqual(response.status_code,302); sender.assert_called_once()
+            response=self.client.post('/reset-password',data={'code':'123456','password':'PasswordBaru1','confirm_password':'PasswordBaru1'})
+            self.assertEqual(response.status_code,302)
+            changed=self.con.execute('SELECT password FROM users WHERE id=?',(user['id'],)).fetchone()[0]
+            self.assertTrue(application.check_password_hash(changed,'PasswordBaru1'))
+        finally:
+            self.con.execute('UPDATE users SET phone=?,password=? WHERE id=?',(*original,user['id'])); self.con.execute('DELETE FROM password_reset_codes WHERE user_id=?',(user['id'],)); self.con.commit()
+
 if __name__=='__main__': unittest.main()
