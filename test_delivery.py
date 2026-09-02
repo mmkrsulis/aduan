@@ -150,6 +150,31 @@ class DeliveryTests(unittest.TestCase):
         self.assertIn(b'--accent:#7c3aed',response.data)
         self.assertIn(b'--side:#7c3aed',response.data)
 
+    def test_landing_uses_saved_identity_and_primary_color(self):
+        org=self.con.execute('SELECT name,app_name,accent FROM organizations WHERE id=?',(self.ticket['org_id'],)).fetchone()
+        self.con.execute("UPDATE organizations SET name='Instansi Uji',app_name='Layanan Uji',accent='#7c3aed' WHERE id=?",(self.ticket['org_id'],)); self.con.commit()
+        try:
+            page=self.client.get('/')
+            self.assertIn(b'<b>Layanan Uji</b><small>Instansi Uji</small>',page.data)
+            self.assertIn(b'style="--accent:#7c3aed"',page.data)
+            css=self.client.get('/static/public-blue.css')
+            self.assertNotIn(b'--accent:#1565c0',css.data)
+            self.assertIn(b'border-top:4px solid var(--accent)',css.data)
+        finally:
+            self.con.execute('UPDATE organizations SET name=?,app_name=?,accent=? WHERE id=?',(*org,self.ticket['org_id'])); self.con.commit()
+
+    def test_landing_statistics_add_configured_historical_offsets(self):
+        actual_total=self.con.execute('SELECT count(*) FROM tickets WHERE org_id=?',(self.ticket['org_id'],)).fetchone()[0]
+        actual_resolved=self.con.execute("SELECT count(*) FROM tickets WHERE org_id=? AND status IN ('resolved','closed')",(self.ticket['org_id'],)).fetchone()[0]
+        original=self.con.execute('SELECT complaint_count_offset,resolved_count_offset FROM organizations WHERE id=?',(self.ticket['org_id'],)).fetchone()
+        try:
+            self.con.execute('UPDATE organizations SET complaint_count_offset=8,resolved_count_offset=3 WHERE id=?',(self.ticket['org_id'],)); self.con.commit()
+            page=self.client.get('/')
+            self.assertIn(f'<strong>{actual_total+8}</strong><b>Aduan masuk</b>'.encode(),page.data)
+            self.assertIn(f'<strong>{actual_resolved+3}</strong><b>Aduan terselesaikan</b>'.encode(),page.data)
+        finally:
+            self.con.execute('UPDATE organizations SET complaint_count_offset=?,resolved_count_offset=? WHERE id=?',(original[0],original[1],self.ticket['org_id'])); self.con.commit()
+
     def test_sidebar_uses_saved_accent_directly(self):
         self.con.execute("UPDATE organizations SET accent='#0c3107' WHERE id=?",(self.ticket['org_id'],)); self.con.commit()
         page=self.client.get('/dashboard')

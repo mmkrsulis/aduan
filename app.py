@@ -142,7 +142,7 @@ def init_db():
     os.makedirs(os.path.dirname(DB), exist_ok=True); os.makedirs(UPLOAD_DIR, exist_ok=True)
     con=sqlite3.connect(DB, timeout=30); quick_replies_new=not con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='quick_replies'").fetchone(); con.executescript(SCHEMA)
     migrations={
-      "organizations":{"app_name":"TEXT DEFAULT 'AduanHub'","icon":"TEXT","timezone":"TEXT DEFAULT 'Asia/Jakarta'","ticket_prefix":"TEXT DEFAULT 'ADU'","ticket_format":"TEXT DEFAULT '{prefix}-{year}-{number:05d}'","notification_sound":"TEXT","notification_sound_enabled":"INTEGER DEFAULT 1","public_whatsapp":"TEXT"},
+      "organizations":{"app_name":"TEXT DEFAULT 'AduanHub'","icon":"TEXT","timezone":"TEXT DEFAULT 'Asia/Jakarta'","ticket_prefix":"TEXT DEFAULT 'ADU'","ticket_format":"TEXT DEFAULT '{prefix}-{year}-{number:05d}'","notification_sound":"TEXT","notification_sound_enabled":"INTEGER DEFAULT 1","public_whatsapp":"TEXT","complaint_count_offset":"INTEGER DEFAULT 0","resolved_count_offset":"INTEGER DEFAULT 0"},
       "contacts":{"email":"TEXT"},
       "tickets":{"channel":"TEXT DEFAULT 'whatsapp'","email_subject":"TEXT"},
       "messages":{"attachment_path":"TEXT","attachment_name":"TEXT","attachment_type":"TEXT","delivery_status":"TEXT DEFAULT 'received'","channel":"TEXT DEFAULT 'whatsapp'","external_id":"TEXT"},
@@ -465,7 +465,12 @@ def landing():
     brand=db().execute("SELECT id,name,app_name,logo,icon,accent,terminology,public_whatsapp FROM organizations ORDER BY id LIMIT 1").fetchone()
     email=db().execute("SELECT address FROM email_configs WHERE org_id=?",(brand["id"],)).fetchone() if brand else None
     whatsapp=normalize_whatsapp((brand["public_whatsapp"] if brand else "") or os.getenv("PUBLIC_WHATSAPP","") or "")
-    return render_template("landing.html",landing_brand=brand,service_email=(email["address"] if email and email["address"] else ""),service_whatsapp=whatsapp)
+    stats={"total":0,"resolved":0}
+    if brand:
+        actual=db().execute("SELECT count(*) total,sum(CASE WHEN status IN ('resolved','closed') THEN 1 ELSE 0 END) resolved FROM tickets WHERE org_id=?",(brand["id"],)).fetchone()
+        offsets=db().execute("SELECT complaint_count_offset,resolved_count_offset FROM organizations WHERE id=?",(brand["id"],)).fetchone()
+        stats={"total":max(0,offsets["complaint_count_offset"] or 0)+(actual["total"] or 0),"resolved":max(0,offsets["resolved_count_offset"] or 0)+(actual["resolved"] or 0)}
+    return render_template("landing.html",landing_brand=brand,landing_stats=stats,service_email=(email["address"] if email and email["address"] else ""),service_whatsapp=whatsapp)
 
 @app.route("/dashboard")
 @login_required
@@ -904,9 +909,12 @@ def settings():
         prefix="".join(c for c in request.form.get("ticket_prefix","ADU").upper() if c.isalnum())[:12] or "ADU"; ticket_format=request.form.get("ticket_format","{prefix}-{year}-{number:05d}").strip()[:80]
         accent=request.form.get("accent","").strip().lower()
         if not re.fullmatch(r"#[0-9a-f]{6}",accent): flash("Warna utama tidak valid.","error"); return redirect(url_for("settings",section="general"))
+        try:
+            complaint_offset=max(0,min(999999999,int(request.form.get("complaint_count_offset") or 0))); resolved_offset=max(0,min(999999999,int(request.form.get("resolved_count_offset") or 0)))
+        except ValueError: flash("Nilai awal statistik harus berupa angka nol atau lebih.","error"); return redirect(url_for("settings",section="general"))
         try: ticket_format.format_map({"prefix":prefix,"year":2026,"month":"08","day":"13","number":1})
         except (KeyError,ValueError): flash("Format nomor aduan tidak valid.","error"); return redirect(url_for("settings",section="general"))
-        db().execute("UPDATE organizations SET name=?,app_name=?,accent=?,terminology=?,timezone=?,ticket_prefix=?,ticket_format=?,logo=?,icon=? WHERE id=?",(request.form["name"],request.form.get("app_name","AduanHub").strip()[:60] or "AduanHub",accent,request.form["terminology"],request.form.get("timezone","Asia/Jakarta"),prefix,ticket_format,logo,icon,session["org_id"])); db().commit(); session["org_name"]=request.form["name"]; audit("organization.updated","organization",session["org_id"]); flash("Pengaturan berhasil disimpan","success")
+        db().execute("UPDATE organizations SET name=?,app_name=?,accent=?,terminology=?,timezone=?,ticket_prefix=?,ticket_format=?,logo=?,icon=?,complaint_count_offset=?,resolved_count_offset=? WHERE id=?",(request.form["name"],request.form.get("app_name","AduanHub").strip()[:60] or "AduanHub",accent,request.form["terminology"],request.form.get("timezone","Asia/Jakarta"),prefix,ticket_format,logo,icon,complaint_offset,resolved_offset,session["org_id"])); db().commit(); session["org_name"]=request.form["name"]; audit("organization.updated","organization",session["org_id"]); flash("Pengaturan berhasil disimpan","success")
     org=db().execute("SELECT * FROM organizations WHERE id=?",(session["org_id"],)).fetchone(); units=db().execute("SELECT * FROM units WHERE org_id=? ORDER BY name",(session["org_id"],)).fetchall(); categories=db().execute("SELECT c.*,(SELECT count(*) FROM tickets t WHERE t.org_id=c.org_id AND t.category=c.name) usage_count FROM categories c WHERE c.org_id=? ORDER BY c.name",(session["org_id"],)).fetchall(); quick_replies=db().execute("SELECT * FROM quick_replies WHERE org_id=? ORDER BY position,id",(session["org_id"],)).fetchall(); flow=db().execute("SELECT * FROM flow_configs WHERE org_id=?",(session["org_id"],)).fetchone(); return render_template("settings.html",org=org,email=email_config(session["org_id"]),units=units,categories=categories,quick_replies=quick_replies,flow=flow,section=section,openwa_public_url=OPENWA_PUBLIC_URL,openwa_qr_url=url_for('whatsapp_qr'),openwa_delivery=delivery.enabled())
 
 @app.post("/settings/quick-replies")
