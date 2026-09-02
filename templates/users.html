@@ -1,4 +1,4 @@
-{% extends 'base.html' %}{% block title %}{{'Pengguna' if lang=='id' else 'Users'}} · {{brand.app_name or 'AduanHub'}}{% endblock %}{% block heading %}{{'Manajemen pengguna' if lang=='id' else 'User management'}}{% endblock %}{% block subheading %}{{'Kelola akses, peran, unit, dan keamanan akun' if lang=='id' else 'Manage access, roles, units, and security'}}{% endblock %}{% block content %}<div class="users-layout">
+{% extends 'base.html' %}{% block title %}{{'Pengguna' if lang=='id' else 'Users'}} · {{brand.app_name or 'AduanHub'}}{% endblock %}{% block heading %}{{'Manajemen pengguna' if lang=='id' else 'User management'}}{% endblock %}{% block subheading %}{{'Kelola akun pengelola, peran, dan keamanan akses' if lang=='id' else 'Manage administrator accounts, roles, and access security'}}{% endblock %}{% block content %}<div class="users-layout">
 <section class="panel" id="user-list">
 <div class="panel-head">
 <div>
@@ -41,9 +41,7 @@
 </label>
 <label>{{'Nomor WhatsApp' if lang=='id' else 'WhatsApp number'}}<input name="phone" value="{{u.phone or ''}}" inputmode="numeric" placeholder="62812…">
 </label>
-<label>{{'Peran' if lang=='id' else 'Role'}}<select name="role">{% for role in ['owner','admin','supervisor','agent','viewer'] %}<option value="{{role}}" {% if u.role==role %}selected{% endif %}>{{role|title}}</option>{% endfor %}</select>
-</label>
-<label>{{'Unit / bidang' if lang=='id' else 'Unit / department'}}<select name="unit"><option value="">{{'Tanpa unit' if lang=='id' else 'No unit'}}</option>{% for unit in units %}<option value="{{unit.name}}" {% if u.unit==unit.name %}selected{% endif %}>{{unit.name}}</option>{% endfor %}</select>
+<label>{{'Peran' if lang=='id' else 'Role'}}<select name="role">{% for role,label in [('owner','Admin Utama'),('admin','Admin'),('supervisor','Supervisor'),('viewer','Pemantau'),('agent','Petugas')] %}<option value="{{role}}" {% if u.role==role %}selected{% endif %}>{{label}}</option>{% endfor %}</select>
 </label>
 <label class="full">{{'Kata sandi baru (opsional)' if lang=='id' else 'New password (optional)'}}<input name="password" type="password" minlength="8" autocomplete="new-password">
 <small>{{'Kosongkan jika tidak ingin mengganti kata sandi.' if lang=='id' else 'Leave blank to keep the current password.'}}</small>
@@ -60,7 +58,7 @@
 <div class="panel-head">
 <div>
 <h3>{{'Tambah pengguna' if lang=='id' else 'Add user'}}</h3>
-<p>{{'Buat akun login, lalu hubungkan sebagai petugas utama pada Unit Penanggung Jawab' if lang=='id' else 'Create a login, then link it as a unit’s primary officer'}}</p>
+<p>{{'Buat akun pengelola sistem. Petugas operasional dibuat melalui menu Penanggung jawab.' if lang=='id' else 'Create management accounts. Operational officers are created under Responsible officers.'}}</p>
 </div>
 </div>
 <div class="user-create-body">
@@ -73,14 +71,11 @@
 <label>{{'Kata sandi sementara' if lang=='id' else 'Temporary password'}}<input name="password" type="password" minlength="8" required>
 </label>
 <label>{{'Peran' if lang=='id' else 'Role'}}<select name="role">
-<option>agent</option>
-<option>supervisor</option>
-<option>viewer</option>
-<option>admin</option>
-<option>owner</option>
+<option value="admin">Admin</option>
+<option value="supervisor">Supervisor</option>
+<option value="viewer">Pemantau</option>
+<option value="owner">Admin Utama</option>
 </select>
-</label>
-<label>{{'Unit / bidang' if lang=='id' else 'Unit / department'}}<select name="unit"><option value="">{{'Pilih unit' if lang=='id' else 'Select unit'}}</option>{% for unit in units %}<option value="{{unit.name}}">{{unit.name}}</option>{% endfor %}</select>
 </label>
 <button class="primary wide">{{'Tambah pengguna' if lang=='id' else 'Create user'}}</button>
 </div>

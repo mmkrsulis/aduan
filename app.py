@@ -769,12 +769,10 @@ def send_mpwa_media(phone,url,mime,caption=""):
 @roles("owner","admin")
 def users():
     if request.method=="POST":
-        role=request.form.get("role","agent"); unit=request.form.get("unit","").strip()
-        valid_unit=not unit or db().execute("SELECT 1 FROM units WHERE org_id=? AND name=? AND active=1",(session["org_id"],unit)).fetchone()
-        if not valid_unit: flash("Unit tidak valid.","error")
-        else:
-            try: db().execute("INSERT INTO users(org_id,name,email,password,role,unit,phone) VALUES(?,?,?,?,?,?,?)",(session["org_id"],request.form["name"],request.form["email"].lower(),generate_password_hash(request.form["password"]),role,unit,request.form.get("phone","").strip())); db().commit(); audit("user.created","user"); flash("Pengguna berhasil ditambahkan.","success")
-            except sqlite3.IntegrityError: flash("Email already exists","error")
+        role=request.form.get("role","admin")
+        if role not in ("owner","admin","supervisor","viewer"): role="admin"
+        try: db().execute("INSERT INTO users(org_id,name,email,password,role,unit,phone) VALUES(?,?,?,?,?,NULL,?)",(session["org_id"],request.form["name"],request.form["email"].lower(),generate_password_hash(request.form["password"]),role,normalize_whatsapp(request.form.get("phone","")))); db().commit(); audit("user.created","user"); flash("Pengguna berhasil ditambahkan.","success")
+        except sqlite3.IntegrityError: flash("Email sudah digunakan.","error")
     rows=db().execute("SELECT * FROM users WHERE org_id=? ORDER BY active DESC,name",(session["org_id"],)).fetchall(); units=db().execute("SELECT name FROM units WHERE org_id=? AND active=1 ORDER BY name",(session["org_id"],)).fetchall(); return render_template("users.html",users=rows,units=units)
 
 @app.post("/users/<int:uid>/toggle")
@@ -800,15 +798,14 @@ def update_user(uid):
     if role not in ("owner","admin","supervisor","agent","viewer"): role="agent"
     if user["role"]=="owner" and role!="owner" and db().execute("SELECT count(*) FROM users WHERE org_id=? AND role='owner'",(session["org_id"],)).fetchone()[0]<=1: flash("Owner terakhir tidak dapat diubah perannya.","error"); return redirect(url_for("users"))
     password=request.form.get("password","")
-    unit=request.form.get("unit","").strip()
-    if unit and not db().execute("SELECT 1 FROM units WHERE org_id=? AND name=? AND active=1",(session["org_id"],unit)).fetchone(): flash("Unit tidak valid.","error"); return redirect(url_for("users"))
+    unit=user["unit"] or ""
     if password and len(password)<8: flash("Kata sandi baru minimal 8 karakter.","error"); return redirect(url_for("users"))
     try:
         phone=request.form.get("phone","").strip()
         if password: db().execute("UPDATE users SET name=?,email=?,role=?,unit=?,phone=?,password=? WHERE id=?",(request.form["name"].strip(),request.form["email"].strip().lower(),role,unit,phone,generate_password_hash(password),uid))
         else: db().execute("UPDATE users SET name=?,email=?,role=?,unit=?,phone=? WHERE id=?",(request.form["name"].strip(),request.form["email"].strip().lower(),role,unit,phone,uid))
         db().commit(); audit("user.updated","user",uid,{"role":role}); flash("Pengguna berhasil diperbarui.","success")
-        if uid==session["uid"]: session.update(name=request.form["name"].strip(),role=role,unit=request.form.get("unit","").strip())
+        if uid==session["uid"]: session.update(name=request.form["name"].strip(),role=role,unit=unit)
     except sqlite3.IntegrityError: flash("Email sudah digunakan pengguna lain.","error")
     return redirect(url_for("users"))
 

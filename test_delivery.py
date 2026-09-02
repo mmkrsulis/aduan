@@ -286,4 +286,12 @@ class DeliveryTests(unittest.TestCase):
         finally:
             self.con.execute('UPDATE users SET phone=?,password=? WHERE id=?',(*original,user['id'])); self.con.execute('DELETE FROM password_reset_codes WHERE user_id=?',(user['id'],)); self.con.commit()
 
+    def test_general_user_creation_does_not_assign_a_unit(self):
+        suffix=os.urandom(4).hex(); email=f'admin-{suffix}@example.local'; phone='628177'+str(int.from_bytes(os.urandom(3),'big')).zfill(8)
+        response=self.client.post('/users',data={'name':'Admin Uji','email':email,'phone':phone,'password':'Password123','role':'supervisor','unit':'Injected'},headers={'X-CSRF-Token':'csrf-test'})
+        self.assertEqual(response.status_code,200)
+        user=self.con.execute('SELECT * FROM users WHERE email=?',(email,)).fetchone()
+        self.assertIsNotNone(user); self.assertIsNone(user['unit']); self.assertEqual(user['role'],'supervisor')
+        self.con.execute('DELETE FROM users WHERE id=?',(user['id'],)); self.con.commit()
+
 if __name__=='__main__': unittest.main()
