@@ -21,13 +21,13 @@
   const qrImage=document.querySelector('#wa-qr-image');
   const qrLoading=document.querySelector('#wa-qr-loading');
   const qrStatus=document.querySelector('#wa-qr-status');
-  let qrTimer=0;
+  let qrTimer=0,qrStatusTimer=0;
 
   const formatPhone=value=>value?`+${value.replace(/^(\d{2})(\d{3})(\d+)/,'$1 $2 $3')}`:'—';
   const announce=(text,type='')=>{message.textContent=text;message.className=`wa-wizard-message ${type}`};
   const busy=(button,value)=>{button.disabled=value;button.classList.toggle('loading',value)};
   const delay=milliseconds=>new Promise(resolve=>setTimeout(resolve,milliseconds));
-  const closeQr=()=>{clearTimeout(qrTimer);qrTimer=0;if(qrDialog?.open)qrDialog.close()};
+  const closeQr=()=>{clearTimeout(qrTimer);clearTimeout(qrStatusTimer);qrTimer=0;qrStatusTimer=0;if(qrDialog?.open)qrDialog.close()};
   const refreshQr=()=>{
     if(!qrDialog?.open)return;
     qrLoading.hidden=false;qrImage.hidden=true;qrStatus.textContent=id?'Meminta kode QR terbaru…':'Requesting the latest QR code…';
@@ -35,7 +35,8 @@
     qrImage.onerror=()=>{qrLoading.hidden=false;qrImage.hidden=true;qrStatus.textContent=id?'QR belum siap. Mencoba kembali…':'QR is not ready. Retrying…';qrTimer=setTimeout(refreshQr,1500)};
     qrImage.src=`${wizard.dataset.qrUrl}?t=${Date.now()}`;
   };
-  const openQr=()=>{if(!qrDialog)return;if(typeof qrDialog.showModal==='function'){if(!qrDialog.open)qrDialog.showModal()}else qrDialog.setAttribute('open','');refreshQr()};
+  const watchQrStatus=async()=>{if(!qrDialog?.open)return;const state=await status(true);if(state.connected){announce(id?`WhatsApp ${formatPhone(state.phone)} berhasil terhubung.`:`WhatsApp ${formatPhone(state.phone)} connected successfully.`,'success');return}qrStatusTimer=setTimeout(watchQrStatus,1500)};
+  const openQr=()=>{if(!qrDialog)return;if(typeof qrDialog.showModal==='function'){if(!qrDialog.open)qrDialog.showModal()}else qrDialog.setAttribute('open','');refreshQr();clearTimeout(qrStatusTimer);qrStatusTimer=setTimeout(watchQrStatus,800)};
 
   async function status(silent=false){
     if(!silent){busy(refresh,true);announce(id?'Memeriksa koneksi OpenWA…':'Checking OpenWA connection…')}
