@@ -773,7 +773,7 @@ def users():
         if role not in ("owner","admin","supervisor","viewer"): role="admin"
         try: db().execute("INSERT INTO users(org_id,name,email,password,role,unit,phone) VALUES(?,?,?,?,?,NULL,?)",(session["org_id"],request.form["name"],request.form["email"].lower(),generate_password_hash(request.form["password"]),role,normalize_whatsapp(request.form.get("phone","")))); db().commit(); audit("user.created","user"); flash("Pengguna berhasil ditambahkan.","success")
         except sqlite3.IntegrityError: flash("Email sudah digunakan.","error")
-    rows=db().execute("SELECT * FROM users WHERE org_id=? ORDER BY active DESC,name",(session["org_id"],)).fetchall(); units=db().execute("SELECT name FROM units WHERE org_id=? AND active=1 ORDER BY name",(session["org_id"],)).fetchall(); return render_template("users.html",users=rows,units=units)
+    rows=db().execute("SELECT * FROM users WHERE org_id=? ORDER BY active DESC,name",(session["org_id"],)).fetchall(); return render_template("users.html",users=rows)
 
 @app.post("/users/<int:uid>/toggle")
 @login_required
@@ -945,7 +945,7 @@ def settings():
         try: ticket_format.format_map({"prefix":prefix,"year":2026,"month":"08","day":"13","number":1})
         except (KeyError,ValueError): flash("Format nomor aduan tidak valid.","error"); return redirect(url_for("settings",section="general"))
         db().execute("UPDATE organizations SET name=?,app_name=?,accent=?,terminology=?,timezone=?,ticket_prefix=?,ticket_format=?,logo=?,icon=?,complaint_count_offset=?,resolved_count_offset=? WHERE id=?",(request.form["name"],request.form.get("app_name","AduanHub").strip()[:60] or "AduanHub",accent,request.form["terminology"],request.form.get("timezone","Asia/Jakarta"),prefix,ticket_format,logo,icon,complaint_offset,resolved_offset,session["org_id"])); db().commit(); session["org_name"]=request.form["name"]; audit("organization.updated","organization",session["org_id"]); flash("Pengaturan berhasil disimpan","success")
-    org=db().execute("SELECT * FROM organizations WHERE id=?",(session["org_id"],)).fetchone(); units=db().execute("SELECT un.*,u.name officer_user_name,u.email officer_user_email,u.phone officer_user_phone FROM units un LEFT JOIN users u ON u.id=un.officer_user_id WHERE un.org_id=? ORDER BY un.name",(session["org_id"],)).fetchall(); unit_users=db().execute("SELECT id,name,email,phone,unit FROM users WHERE org_id=? AND active=1 AND role IN ('supervisor','agent') ORDER BY name",(session["org_id"],)).fetchall(); categories=db().execute("SELECT c.*,(SELECT count(*) FROM tickets t WHERE t.org_id=c.org_id AND t.category=c.name) usage_count FROM categories c WHERE c.org_id=? ORDER BY c.name",(session["org_id"],)).fetchall(); quick_replies=db().execute("SELECT * FROM quick_replies WHERE org_id=? ORDER BY position,id",(session["org_id"],)).fetchall(); flow=db().execute("SELECT * FROM flow_configs WHERE org_id=?",(session["org_id"],)).fetchone(); return render_template("settings.html",org=org,email=email_config(session["org_id"]),units=units,unit_users=unit_users,categories=categories,quick_replies=quick_replies,flow=flow,section=section,openwa_public_url=OPENWA_PUBLIC_URL,openwa_qr_url=url_for('whatsapp_qr'),openwa_delivery=delivery.enabled())
+    org=db().execute("SELECT * FROM organizations WHERE id=?",(session["org_id"],)).fetchone(); units=db().execute("SELECT un.*,u.name officer_user_name,u.phone officer_user_phone FROM units un LEFT JOIN users u ON u.id=un.officer_user_id WHERE un.org_id=? ORDER BY un.name",(session["org_id"],)).fetchall(); categories=db().execute("SELECT c.*,(SELECT count(*) FROM tickets t WHERE t.org_id=c.org_id AND t.category=c.name) usage_count FROM categories c WHERE c.org_id=? ORDER BY c.name",(session["org_id"],)).fetchall(); quick_replies=db().execute("SELECT * FROM quick_replies WHERE org_id=? ORDER BY position,id",(session["org_id"],)).fetchall(); flow=db().execute("SELECT * FROM flow_configs WHERE org_id=?",(session["org_id"],)).fetchone(); return render_template("settings.html",org=org,email=email_config(session["org_id"]),units=units,categories=categories,quick_replies=quick_replies,flow=flow,section=section,openwa_public_url=OPENWA_PUBLIC_URL,openwa_qr_url=url_for('whatsapp_qr'),openwa_delivery=delivery.enabled())
 
 @app.post("/settings/quick-replies")
 @login_required
@@ -1014,15 +1014,15 @@ def delete_category(category_id):
 @login_required
 @roles("owner","admin")
 def create_unit():
-    name=request.form.get("name","").strip(); phone=normalize_whatsapp(request.form.get("phone","") or request.form.get("officer_phone",""))
-    if not name or not phone: flash("Nama bidang dan nomor WhatsApp wajib diisi.","error"); return redirect(url_for("settings",section="units"))
+    name=request.form.get("name","").strip(); officer_name=request.form.get("officer_name","").strip(); phone=normalize_whatsapp(request.form.get("phone",""))
+    if not name or not officer_name or not phone: flash("Nama bidang, nama petugas, dan nomor WA wajib diisi.","error"); return redirect(url_for("settings",section="units"))
     try:
         existing=db().execute("SELECT * FROM users WHERE phone=?",(phone,)).fetchone()
         if existing and existing["org_id"]!=session["org_id"]: flash("Nomor WhatsApp sudah digunakan pada organisasi lain.","error"); return redirect(url_for("settings",section="units"))
         if existing: officer_user_id=existing["id"]; db().execute("UPDATE users SET unit=?,active=1 WHERE id=?",(name,officer_user_id))
         else:
-            email=f"wa-{session['org_id']}-{phone}@aduanhub.local"; officer_user_id=db().execute("INSERT INTO users(org_id,name,email,password,role,unit,phone) VALUES(?,?,?,?,?,?,?)",(session["org_id"],f"Petugas {name}",email,generate_password_hash(secrets.token_urlsafe(24)),"agent",name,phone)).lastrowid
-        db().execute("INSERT INTO units(org_id,name,officer_name,officer_phone,officer_user_id) VALUES(?,?,?,?,?)",(session["org_id"],name,f"Petugas {name}",phone,officer_user_id))
+            email=f"wa-{session['org_id']}-{phone}@aduanhub.local"; officer_user_id=db().execute("INSERT INTO users(org_id,name,email,password,role,unit,phone) VALUES(?,?,?,?,?,?,?)",(session["org_id"],officer_name,email,generate_password_hash(secrets.token_urlsafe(24)),"agent",name,phone)).lastrowid
+        db().execute("UPDATE users SET name=?,unit=?,phone=?,active=1 WHERE id=?",(officer_name,name,phone,officer_user_id)); db().execute("INSERT INTO units(org_id,name,officer_name,officer_phone,officer_user_id) VALUES(?,?,?,?,?)",(session["org_id"],name,officer_name,phone,officer_user_id))
         db().commit(); audit("unit.created","unit"); flash("Unit penanggung jawab ditambahkan.","success")
         org=db().execute("SELECT * FROM organizations WHERE id=?",(session["org_id"],)).fetchone(); send_mpwa_for_org(org,phone,f"Akun {org['app_name'] or 'AduanHub'} untuk bidang {name} telah dibuat.\n\nNomor login: {phone}\nBuat password melalui:\n{request.url_root.rstrip('/')}{url_for('forgot_password')}")
     except sqlite3.IntegrityError: flash("Unit name already exists","error")
@@ -1034,14 +1034,14 @@ def create_unit():
 def update_unit(unit_id):
     unit=db().execute("SELECT * FROM units WHERE id=? AND org_id=?",(unit_id,session["org_id"])).fetchone()
     if not unit: return ("Not found",404)
-    name=request.form["name"].strip(); phone=normalize_whatsapp(request.form.get("phone","") or request.form.get("officer_phone",""))
-    if not name or not phone: flash("Nama bidang dan nomor WhatsApp wajib diisi.","error"); return redirect(url_for("settings",section="units"))
+    name=request.form["name"].strip(); officer_name=request.form.get("officer_name","").strip(); phone=normalize_whatsapp(request.form.get("phone",""))
+    if not name or not officer_name or not phone: flash("Nama bidang, nama petugas, dan nomor WA wajib diisi.","error"); return redirect(url_for("settings",section="units"))
     try:
         officer_user_id=unit["officer_user_id"]
-        if officer_user_id: db().execute("UPDATE users SET unit=?,phone=? WHERE id=? AND org_id=?",(name,phone,officer_user_id,session["org_id"]))
+        if officer_user_id: db().execute("UPDATE users SET name=?,unit=?,phone=? WHERE id=? AND org_id=?",(officer_name,name,phone,officer_user_id,session["org_id"]))
         else:
-            email=f"wa-{session['org_id']}-{phone}@aduanhub.local"; officer_user_id=db().execute("INSERT INTO users(org_id,name,email,password,role,unit,phone) VALUES(?,?,?,?,?,?,?)",(session["org_id"],f"Petugas {name}",email,generate_password_hash(secrets.token_urlsafe(24)),"agent",name,phone)).lastrowid
-        db().execute("UPDATE units SET name=?,officer_name=?,officer_phone=?,officer_user_id=?,active=1 WHERE id=? AND org_id=?",(name,f"Petugas {name}",phone,officer_user_id,unit_id,session["org_id"])); db().execute("UPDATE tickets SET unit=? WHERE org_id=? AND unit=?",(name,session["org_id"],unit["name"])); db().execute("UPDATE users SET unit=? WHERE org_id=? AND unit=?",(name,session["org_id"],unit["name"]));
+            email=f"wa-{session['org_id']}-{phone}@aduanhub.local"; officer_user_id=db().execute("INSERT INTO users(org_id,name,email,password,role,unit,phone) VALUES(?,?,?,?,?,?,?)",(session["org_id"],officer_name,email,generate_password_hash(secrets.token_urlsafe(24)),"agent",name,phone)).lastrowid
+        db().execute("UPDATE units SET name=?,officer_name=?,officer_phone=?,officer_user_id=?,active=1 WHERE id=? AND org_id=?",(name,officer_name,phone,officer_user_id,unit_id,session["org_id"])); db().execute("UPDATE tickets SET unit=? WHERE org_id=? AND unit=?",(name,session["org_id"],unit["name"])); db().execute("UPDATE users SET unit=? WHERE org_id=? AND unit=?",(name,session["org_id"],unit["name"]));
         db().commit(); audit("unit.updated","unit",unit_id,{"old_name":unit["name"],"new_name":name}); flash("Unit penanggung jawab diperbarui.","success")
     except sqlite3.IntegrityError: flash("Unit name already exists","error")
     return redirect(url_for("settings",section="units"))

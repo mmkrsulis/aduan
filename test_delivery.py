@@ -265,10 +265,10 @@ class DeliveryTests(unittest.TestCase):
     def test_create_unit_also_creates_whatsapp_login(self):
         name='Bidang '+os.urandom(3).hex(); phone='628199'+str(int.from_bytes(os.urandom(3),'big')).zfill(8)
         with patch.object(application,'send_mpwa_for_org',return_value=(True,'sent')) as sender:
-            response=self.client.post('/units',data={'name':name,'phone':phone},headers={'X-CSRF-Token':'csrf-test'})
+            response=self.client.post('/units',data={'name':name,'officer_name':'Petugas Uji','phone':phone},headers={'X-CSRF-Token':'csrf-test'})
         self.assertEqual(response.status_code,302)
         unit=self.con.execute('SELECT * FROM units WHERE name=?',(name,)).fetchone(); user=self.con.execute('SELECT * FROM users WHERE id=?',(unit['officer_user_id'],)).fetchone()
-        self.assertEqual((user['phone'],user['unit'],user['role']),(phone,name,'agent')); sender.assert_called_once()
+        self.assertEqual((user['name'],user['phone'],user['unit'],user['role']),('Petugas Uji',phone,name,'agent')); sender.assert_called_once()
         self.con.execute('DELETE FROM units WHERE id=?',(unit['id'],)); self.con.execute('DELETE FROM users WHERE id=?',(user['id'],)); self.con.commit()
 
     def test_whatsapp_otp_resets_password(self):
