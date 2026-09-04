@@ -9,10 +9,7 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
 from cryptography.fernet import Fernet, InvalidToken
 import requests
-import qrcode
 import delivery
-from google.auth.transport.requests import Request as GoogleAuthRequest
-from google.oauth2 import service_account
 from zoneinfo import ZoneInfo
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4, landscape
@@ -24,7 +21,7 @@ app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
 app.secret_key = os.getenv("SECRET_KEY", secrets.token_hex(32))
 # Base64 webhook payloads are roughly 33% larger than the decoded attachment.
 app.config.update(MAX_CONTENT_LENGTH=12*1024*1024,SESSION_COOKIE_HTTPONLY=True,SESSION_COOKIE_SAMESITE="Lax",SESSION_COOKIE_SECURE=os.getenv("COOKIE_SECURE","false").lower()=="true",PERMANENT_SESSION_LIFETIME=timedelta(days=30))
-api_tokens=URLSafeTimedSerializer(app.secret_key,salt="aduanhub-mobile-v1")
+api_tokens=URLSafeTimedSerializer(app.secret_key,salt="aduanhub-api-v1")
 DB = os.getenv("DATABASE_PATH", os.path.join(os.path.dirname(__file__), "aduan.db"))
 UPLOAD_DIR = os.getenv("UPLOAD_DIR", os.path.join(os.path.dirname(DB), "uploads"))
 OPENWA_CONTROL_URL = os.getenv("OPENWA_CONTROL_URL", "http://host.docker.internal:8080").rstrip("/")
@@ -32,7 +29,6 @@ OPENWA_PUBLIC_URL = os.getenv("OPENWA_PUBLIC_URL", "http://100.103.199.63:8080")
 OPENWA_API_KEY = os.getenv("WA_API_KEY", "")
 OPENWA_SESSION_ID = os.getenv("OPENWA_SESSION_ID", "")
 ALLOWED_MEDIA = {"image/jpeg":"jpg","image/png":"png","image/webp":"webp","video/mp4":"mp4","audio/mpeg":"mp3","audio/ogg":"ogg","application/pdf":"pdf"}
-ANDROID_APK_PATH = os.getenv("ANDROID_APK_PATH", os.path.join(os.path.dirname(DB), "releases", "AduanHub.apk"))
 
 def api_token_version(password_hash):
     return hashlib.sha256((password_hash or "").encode()).hexdigest()[:16]
@@ -47,10 +43,8 @@ def decrypt_secret(value):
     try: return credential_cipher().decrypt(value.encode()).decode()
     except (InvalidToken,ValueError): return ""
 
-def issue_mobile_token(user, device_name="Android"):
-    cur=db().execute("INSERT INTO mobile_devices(org_id,user_id,name,platform,last_seen_at) VALUES(?,?,?,?,CURRENT_TIMESTAMP)",(user["org_id"],user["id"],(device_name or "Android")[:80],"android"))
-    did=cur.lastrowid
-    return api_tokens.dumps({"uid":user["id"],"did":did,"v":api_token_version(user["password"])})
+def issue_api_token(user):
+    return api_tokens.dumps({"uid":user["id"],"v":api_token_version(user["password"])})
 
 ID = {
  "Overview":"Ringkasan","Service intelligence at a glance":"Ringkasan kinerja layanan",
@@ -115,9 +109,6 @@ CREATE TABLE IF NOT EXISTS notifications(id INTEGER PRIMARY KEY, org_id INTEGER 
 CREATE TABLE IF NOT EXISTS flow_configs(id INTEGER PRIMARY KEY, org_id INTEGER UNIQUE NOT NULL, enabled INTEGER DEFAULT 1, default_language TEXT DEFAULT 'id', welcome_id TEXT, welcome_en TEXT, service_info_id TEXT, service_info_en TEXT, confirmation_id TEXT, confirmation_en TEXT, completion_id TEXT, completion_en TEXT, forward_template_id TEXT, forward_template_en TEXT, status_template_id TEXT, status_template_en TEXT, unavailable_id TEXT, unavailable_en TEXT, menu_items TEXT DEFAULT '[]', ai_enabled INTEGER DEFAULT 0, ai_prompt TEXT, ai_confidence REAL DEFAULT .8, session_timeout_minutes INTEGER DEFAULT 30, office_hours TEXT DEFAULT 'Monday-Friday, 08:00-16:00', updated_at TEXT DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(org_id) REFERENCES organizations(id));
 CREATE TABLE IF NOT EXISTS conversation_states(id INTEGER PRIMARY KEY, org_id INTEGER NOT NULL, phone TEXT NOT NULL, step TEXT NOT NULL DEFAULT 'menu', language TEXT DEFAULT 'id', data TEXT DEFAULT '{}', human_takeover INTEGER DEFAULT 0, updated_at TEXT DEFAULT CURRENT_TIMESTAMP, UNIQUE(org_id,phone), FOREIGN KEY(org_id) REFERENCES organizations(id));
 CREATE TABLE IF NOT EXISTS chat_requests(id INTEGER PRIMARY KEY, org_id INTEGER NOT NULL, ticket_id INTEGER NOT NULL, phone TEXT NOT NULL, language TEXT DEFAULT 'id', status TEXT DEFAULT 'pending', expires_at TEXT NOT NULL, approved_by INTEGER, approved_at TEXT, expired_at TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(org_id) REFERENCES organizations(id), FOREIGN KEY(ticket_id) REFERENCES tickets(id) ON DELETE CASCADE, FOREIGN KEY(approved_by) REFERENCES users(id));
-CREATE TABLE IF NOT EXISTS mobile_pairings(id INTEGER PRIMARY KEY, org_id INTEGER NOT NULL, user_id INTEGER NOT NULL, token_hash TEXT UNIQUE NOT NULL, expires_at TEXT NOT NULL, used_at TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(org_id) REFERENCES organizations(id), FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE);
-CREATE TABLE IF NOT EXISTS mobile_devices(id INTEGER PRIMARY KEY, org_id INTEGER NOT NULL, user_id INTEGER NOT NULL, name TEXT NOT NULL, platform TEXT DEFAULT 'android', last_seen_at TEXT, revoked_at TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(org_id) REFERENCES organizations(id), FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE);
-CREATE TABLE IF NOT EXISTS mobile_push_tokens(id INTEGER PRIMARY KEY, org_id INTEGER NOT NULL, user_id INTEGER NOT NULL, token TEXT UNIQUE NOT NULL, platform TEXT DEFAULT 'android', updated_at TEXT DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(org_id) REFERENCES organizations(id), FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE);
 CREATE TABLE IF NOT EXISTS password_reset_codes(id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL, code_hash TEXT NOT NULL, expires_at TEXT NOT NULL, used_at TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE);
 CREATE TABLE IF NOT EXISTS email_configs(id INTEGER PRIMARY KEY, org_id INTEGER UNIQUE NOT NULL, enabled INTEGER DEFAULT 0, address TEXT, sender_name TEXT, imap_host TEXT, imap_port INTEGER DEFAULT 993, imap_security TEXT DEFAULT 'ssl', imap_username TEXT, imap_password TEXT, imap_folder TEXT DEFAULT 'INBOX', smtp_host TEXT, smtp_port INTEGER DEFAULT 587, smtp_security TEXT DEFAULT 'starttls', smtp_username TEXT, smtp_password TEXT, signature TEXT, auto_reply INTEGER DEFAULT 1, last_checked_at TEXT, last_error TEXT, updated_at TEXT DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(org_id) REFERENCES organizations(id));
 CREATE TABLE IF NOT EXISTS email_receipts(id INTEGER PRIMARY KEY, org_id INTEGER NOT NULL, message_id TEXT NOT NULL, ticket_id INTEGER, received_at TEXT DEFAULT CURRENT_TIMESTAMP, UNIQUE(org_id,message_id), FOREIGN KEY(org_id) REFERENCES organizations(id), FOREIGN KEY(ticket_id) REFERENCES tickets(id) ON DELETE SET NULL);
@@ -287,50 +278,8 @@ def scoped_ticket_where(alias="t"):
     if session.get("role")=="agent": return f"{alias}.unit=? AND ({alias}.assignee_id IS NULL OR {alias}.assignee_id=?)",[session.get("unit") or "",session.get("uid")]
     return f"{alias}.unit=?",[session.get("unit") or ""]
 
-_fcm_credentials = None
-
-def firebase_credentials():
-    global _fcm_credentials
-    if _fcm_credentials is not None: return _fcm_credentials
-    value=os.getenv("FCM_SERVICE_ACCOUNT_JSON","").strip()
-    path=os.getenv("FCM_SERVICE_ACCOUNT_FILE","").strip()
-    if not value and path:
-        try:
-            with open(path,encoding="utf-8") as handle: value=handle.read()
-        except OSError: return None
-    if not value: return None
-    try:
-        info=json.loads(value)
-        _fcm_credentials=service_account.Credentials.from_service_account_info(info,scopes=["https://www.googleapis.com/auth/firebase.messaging"])
-        return _fcm_credentials
-    except (ValueError,KeyError,TypeError): return None
-
-def send_fcm(org_id,user_id,notification_id,ticket_id,title,body):
-    try: credentials=firebase_credentials()
-    except Exception: return
-    if not credentials: return
-    try:
-        if not credentials.valid: credentials.refresh(GoogleAuthRequest())
-    except Exception: return
-    project_id=getattr(credentials,"project_id",None)
-    if not project_id: return
-    if user_id:
-        rows=db().execute("SELECT id,token FROM mobile_push_tokens WHERE org_id=? AND user_id=?",(org_id,user_id)).fetchall()
-    else:
-        rows=db().execute("SELECT p.id,p.token FROM mobile_push_tokens p JOIN users u ON u.id=p.user_id WHERE p.org_id=? AND u.active=1 AND u.role IN ('owner','admin')",(org_id,)).fetchall()
-    endpoint=f"https://fcm.googleapis.com/v1/projects/{project_id}/messages:send"
-    headers={"Authorization":f"Bearer {credentials.token}","Content-Type":"application/json"}
-    for row in rows:
-        payload={"message":{"token":row["token"],"data":{"notification_id":str(notification_id),"ticket_id":str(ticket_id or ""),"title":title,"body":body or ""},"android":{"priority":"high"}}}
-        try:
-            response=requests.post(endpoint,headers=headers,json=payload,timeout=8)
-            if response.status_code in (404,410): db().execute("DELETE FROM mobile_push_tokens WHERE id=?",(row["id"],))
-        except requests.RequestException:
-            pass
-
 def create_notification(org_id,ticket_id,title,body,user_id=None):
     cur=db().execute("INSERT INTO notifications(org_id,user_id,ticket_id,title,body) VALUES(?,?,?,?,?)",(org_id,user_id,ticket_id,title,body))
-    send_fcm(org_id,user_id,cur.lastrowid,ticket_id,title,body)
     return cur.lastrowid
 
 def notify_assigned_users(org_id,ticket_id,title,body,unit=None,assignee_id=None):
@@ -512,34 +461,6 @@ def dashboard():
     tickets=db().execute(f"SELECT t.*,c.name contact,c.phone,u.name assignee FROM tickets t JOIN contacts c ON c.id=t.contact_id LEFT JOIN users u ON u.id=t.assignee_id WHERE {base} ORDER BY t.updated_at DESC LIMIT 8",[oid,*scope_params]).fetchall()
     cats=db().execute(f"SELECT t.category,count(*) n FROM tickets t WHERE {base} GROUP BY t.category ORDER BY n DESC",[oid,*scope_params]).fetchall()
     return render_template("dashboard.html",stats=stats,tickets=tickets,cats=cats)
-
-@app.get("/download/android")
-@login_required
-def download_android():
-    if not os.path.isfile(ANDROID_APK_PATH):
-        return ("Android application is not available.", 404)
-    return send_file(ANDROID_APK_PATH, mimetype="application/vnd.android.package-archive", as_attachment=True, download_name="AduanHub-1.4.0.apk")
-
-@app.get("/mobile/connect")
-@login_required
-def mobile_connect():
-    raw=secrets.token_urlsafe(32); digest=hashlib.sha256(raw.encode()).hexdigest()
-    db().execute("UPDATE mobile_pairings SET used_at=CURRENT_TIMESTAMP WHERE user_id=? AND used_at IS NULL",(session["uid"],))
-    cur=db().execute("INSERT INTO mobile_pairings(org_id,user_id,token_hash,expires_at) VALUES(?,?,?,datetime('now','+2 minutes'))",(session["org_id"],session["uid"],digest))
-    pairing_id=cur.lastrowid; db().commit()
-    payload=json.dumps({"v":1,"server":request.url_root.rstrip("/"),"token":raw},separators=(",",":"))
-    image=qrcode.make(payload); output=io.BytesIO(); image.save(output,format="PNG")
-    qr="data:image/png;base64,"+base64.b64encode(output.getvalue()).decode()
-    devices=db().execute("SELECT d.*,u.name user_name FROM mobile_devices d JOIN users u ON u.id=d.user_id WHERE d.org_id=? AND d.revoked_at IS NULL AND (? IN ('owner','admin') OR d.user_id=?) ORDER BY d.created_at DESC",(session["org_id"],session["role"],session["uid"])).fetchall()
-    return render_template("mobile_connect.html",qr=qr,pairing_id=pairing_id,devices=devices)
-
-@app.post("/mobile/devices/<int:device_id>/revoke")
-@login_required
-def mobile_device_revoke(device_id):
-    device=db().execute("SELECT * FROM mobile_devices WHERE id=? AND org_id=?",(device_id,session["org_id"])).fetchone()
-    if not device or (session["role"] not in ("owner","admin") and device["user_id"]!=session["uid"]): return ("Not found",404)
-    db().execute("UPDATE mobile_devices SET revoked_at=CURRENT_TIMESTAMP WHERE id=?",(device_id,)); db().commit(); flash("Akses perangkat dicabut","success")
-    return redirect(url_for("mobile_connect"))
 
 @app.route("/tickets")
 @login_required
@@ -879,8 +800,18 @@ def whatsapp_test_send():
 @login_required
 @roles('owner','admin')
 def whatsapp_qr():
+    qr_url=f"{OPENWA_CONTROL_URL}/api/sessions/{OPENWA_SESSION_ID}/qr"
+    session_url=f"{OPENWA_CONTROL_URL}/api/sessions/{OPENWA_SESSION_ID}/start"
+    headers={"X-API-Key":OPENWA_API_KEY}
     try:
-        response=requests.get(f"{OPENWA_CONTROL_URL}/api/sessions/{OPENWA_SESSION_ID}/qr",headers={"X-API-Key":OPENWA_API_KEY},timeout=6)
+        response=requests.get(qr_url,headers=headers,timeout=6)
+        if getattr(response,"status_code",200)==400 and "not started" in getattr(response,"text","").lower():
+            started=requests.post(session_url,headers=headers,timeout=30)
+            if not started.ok: return jsonify(error='Sesi OpenWA gagal dijalankan.'),502
+            for _ in range(12):
+                time.sleep(.5)
+                response=requests.get(qr_url,headers=headers,timeout=6)
+                if response.ok: break
     except requests.RequestException:
         return jsonify(error='QR OpenWA belum tersedia.'),503
     try:
@@ -1303,10 +1234,6 @@ def api_auth(fn):
         except BadSignature: return jsonify(error="invalid_token"),401
         user=db().execute("SELECT u.*,o.name org_name,o.app_name,o.logo,o.icon,o.accent,o.terminology,o.timezone FROM users u JOIN organizations o ON o.id=u.org_id WHERE u.id=? AND u.active=1",(payload.get("uid"),)).fetchone()
         if not user or payload.get("v")!=api_token_version(user["password"]): return jsonify(error="invalid_token"),401
-        if payload.get("did"):
-            device=db().execute("SELECT id FROM mobile_devices WHERE id=? AND user_id=? AND revoked_at IS NULL",(payload["did"],user["id"])).fetchone()
-            if not device: return jsonify(error="device_revoked",message="Akses perangkat ini telah dicabut."),401
-            db().execute("UPDATE mobile_devices SET last_seen_at=CURRENT_TIMESTAMP WHERE id=?",(payload["did"],)); db().commit()
         g.api_user=user
         return fn(*args,**kwargs)
     return inner
@@ -1324,23 +1251,7 @@ def api_login():
     body=request.get_json(silent=True) or {}; email=str(body.get("email","")).strip().lower(); password=str(body.get("password", ""))
     user=db().execute("SELECT u.*,o.name org_name,o.app_name,o.logo,o.icon,o.accent,o.terminology FROM users u JOIN organizations o ON o.id=u.org_id WHERE u.email=? AND u.active=1",(email,)).fetchone()
     if not user or not check_password_hash(user["password"],password): return jsonify(error="invalid_credentials",message="Email atau kata sandi tidak sesuai."),401
-    token=issue_mobile_token(user,str(body.get("device_name") or "Android")); db().execute("UPDATE users SET last_login=CURRENT_TIMESTAMP WHERE id=?",(user["id"],)); db().commit()
-    return jsonify(token=token,user={"id":user["id"],"name":user["name"],"email":user["email"],"role":user["role"],"unit":user["unit"] or ""},organization={"name":user["org_name"],"app_name":user["app_name"],"accent":user["accent"],"logo":url_for("media_file",filename=user["logo"],_external=True) if user["logo"] else None})
-
-@app.post("/api/v1/auth/pair")
-def api_pair():
-    body=request.get_json(silent=True) or {}; raw=str(body.get("token") or "")
-    if not raw: return jsonify(error="invalid_pairing",message="QR tidak valid."),400
-    digest=hashlib.sha256(raw.encode()).hexdigest(); con=db()
-    try:
-        con.execute("BEGIN IMMEDIATE")
-        pairing=con.execute("SELECT * FROM mobile_pairings WHERE token_hash=? AND used_at IS NULL AND expires_at>CURRENT_TIMESTAMP",(digest,)).fetchone()
-        if not pairing: con.rollback(); return jsonify(error="pairing_expired",message="QR sudah digunakan atau kedaluwarsa. Buat QR baru dari dashboard."),410
-        user=con.execute("SELECT u.*,o.name org_name,o.app_name,o.logo,o.icon,o.accent,o.terminology FROM users u JOIN organizations o ON o.id=u.org_id WHERE u.id=? AND u.active=1",(pairing["user_id"],)).fetchone()
-        if not user: con.rollback(); return jsonify(error="invalid_pairing"),401
-        con.execute("UPDATE mobile_pairings SET used_at=CURRENT_TIMESTAMP WHERE id=?",(pairing["id"],))
-        token=issue_mobile_token(user,str(body.get("device_name") or "Android")); con.execute("UPDATE users SET last_login=CURRENT_TIMESTAMP WHERE id=?",(user["id"],)); con.commit()
-    except Exception: con.rollback(); raise
+    token=issue_api_token(user); db().execute("UPDATE users SET last_login=CURRENT_TIMESTAMP WHERE id=?",(user["id"],)); db().commit()
     return jsonify(token=token,user={"id":user["id"],"name":user["name"],"email":user["email"],"role":user["role"],"unit":user["unit"] or ""},organization={"name":user["org_name"],"app_name":user["app_name"],"accent":user["accent"],"logo":url_for("media_file",filename=user["logo"],_external=True) if user["logo"] else None})
 
 @app.get("/api/v1/me")
@@ -1349,21 +1260,6 @@ def api_me():
     u=g.api_user
     unread=db().execute("SELECT count(*) FROM notifications WHERE org_id=? AND user_id=? AND read_at IS NULL",(u["org_id"],u["id"])).fetchone()[0] if u["role"] not in ("owner","admin") else db().execute("SELECT count(*) FROM notifications WHERE org_id=? AND read_at IS NULL AND (user_id IS NULL OR user_id=?)",(u["org_id"],u["id"])).fetchone()[0]
     return jsonify(user={"id":u["id"],"name":u["name"],"email":u["email"],"role":u["role"],"unit":u["unit"] or ""},organization={"name":u["org_name"],"app_name":u["app_name"],"accent":u["accent"],"logo":url_for("media_file",filename=u["logo"],_external=True) if u["logo"] else None},unread=unread)
-
-@app.post("/api/v1/devices/push-token")
-@api_auth
-def api_push_token_register():
-    u=g.api_user; body=request.get_json(silent=True) or {}; token=str(body.get("token") or "").strip(); platform=str(body.get("platform") or "android")[:20]
-    if not token or len(token)>4096: return jsonify(error="invalid_token"),400
-    db().execute("INSERT INTO mobile_push_tokens(org_id,user_id,token,platform,updated_at) VALUES(?,?,?,?,CURRENT_TIMESTAMP) ON CONFLICT(token) DO UPDATE SET org_id=excluded.org_id,user_id=excluded.user_id,platform=excluded.platform,updated_at=CURRENT_TIMESTAMP",(u["org_id"],u["id"],token,platform)); db().commit()
-    return jsonify(status="registered")
-
-@app.post("/api/v1/devices/push-token/remove")
-@api_auth
-def api_push_token_remove():
-    u=g.api_user; token=str((request.get_json(silent=True) or {}).get("token") or "").strip()
-    if token: db().execute("DELETE FROM mobile_push_tokens WHERE token=? AND user_id=?",(token,u["id"])); db().commit()
-    return jsonify(status="removed")
 
 def api_scope(user,alias="t"):
     if user["role"] in ("owner","admin"): return "1=1",[]

@@ -6,7 +6,6 @@ services:
       MPWA_API_KEY: dev-openwa
       MPWA_SENDER: default
       COOKIE_SECURE: "false"
-      FCM_SERVICE_ACCOUNT_FILE: /run/secrets/disabled-firebase.json
       PUBLIC_WHATSAPP: ${PUBLIC_WHATSAPP:-6285701972379}
       OPENWA_CONTROL_URL: http://openwa-core:2785
       OPENWA_PUBLIC_URL: /settings?section=whatsapp
@@ -19,7 +18,6 @@ services:
       MPWA_BASE_URL: http://host.docker.internal:18081
       MPWA_API_KEY: dev-openwa
       MPWA_SENDER: default
-      FCM_SERVICE_ACCOUNT_FILE: /run/secrets/disabled-firebase.json
 
   openwa-delivery-worker:
     build: .
@@ -51,4 +49,3 @@ services:
     profiles: [production-email]
     environment:
       MPWA_BASE_URL: http://host.docker.internal:18081
-      FCM_SERVICE_ACCOUNT_FILE: /run/secrets/disabled-firebase.json

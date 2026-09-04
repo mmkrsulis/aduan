@@ -1,0 +1,21 @@
+name: Web edition checks
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - run: python -m py_compile app.py delivery.py openwa_worker.py chat_timeout_worker.py email_worker.py
+      - run: python test_delivery.py
+      - run: python test_autoreply.py
+      - run: bash -n install.sh deploy.sh
+      - run: docker compose -f compose.opensource.yaml --env-file .env.example config --quiet

@@ -1,0 +1,101 @@
+services:
+  aduan-hub:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "${ADUAN_BIND:-0.0.0.0}:${ADUAN_PORT:-18083}:8080"
+    environment: &aduan-env
+      SECRET_KEY: ${SECRET_KEY:?Set SECRET_KEY in .env}
+      DATABASE_PATH: /data/aduan.db
+      BOOTSTRAP_PASSWORD: ${BOOTSTRAP_PASSWORD:?Set BOOTSTRAP_PASSWORD in .env}
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET:?Set WEBHOOK_SECRET in .env}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      OPENWA_DELIVERY: "true"
+      OPENWA_CONTROL_URL: http://openwa-core:2785
+      OPENWA_PUBLIC_URL: /settings?section=whatsapp
+      OPENWA_SESSION_ID: ${OPENWA_SESSION_ID:-aduanhub}
+      WA_API_KEY: ${WEBHOOK_SECRET}
+      PUBLIC_WHATSAPP: ${PUBLIC_WHATSAPP:-}
+    volumes:
+      - aduan_data:/data
+    networks: [aduan_net]
+    depends_on:
+      openwa-core:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health',timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  chat-timeout-worker:
+    build: .
+    restart: unless-stopped
+    command: ["python", "chat_timeout_worker.py"]
+    environment: *aduan-env
+    volumes:
+      - aduan_data:/data
+    networks: [aduan_net]
+    depends_on:
+      aduan-hub:
+        condition: service_healthy
+
+  openwa-delivery-worker:
+    build: .
+    restart: unless-stopped
+    command: ["python", "openwa_worker.py"]
+    environment:
+      DATABASE_PATH: /data/aduan.db
+      OPENWA_URL: http://openwa-core:2785
+      OPENWA_SESSION_ID: ${OPENWA_SESSION_ID:-aduanhub}
+      WA_API_KEY: ${WEBHOOK_SECRET}
+      OPENWA_ACK_URL: http://aduan-hub:8080/hooks/openwa/ack
+      OPENWA_INCOMING_URL: http://aduan-hub:8080/hooks/openwa/incoming
+      ADUAN_INTERNAL_URL: http://aduan-hub:8080
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET}
+    volumes:
+      - aduan_data:/data
+    networks: [aduan_net]
+    depends_on:
+      aduan-hub:
+        condition: service_healthy
+
+  openwa-core:
+    build:
+      context: ./vendor/OpenWA
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    security_opt: [no-new-privileges:true]
+    environment:
+      NODE_ENV: production
+      PORT: 2785
+      AUTO_START_SESSIONS: "true"
+      DATABASE_TYPE: sqlite
+      DATABASE_NAME: /app/data/openwa.sqlite
+      DATABASE_SYNCHRONIZE: "true"
+      ENGINE_TYPE: baileys
+      SESSION_DATA_PATH: /app/data/sessions
+      STORAGE_TYPE: local
+      STORAGE_LOCAL_PATH: /app/data/media
+      SERVE_DASHBOARD: "false"
+      ENABLE_SWAGGER: "false"
+      API_MASTER_KEY: ${WEBHOOK_SECRET}
+      SSRF_ALLOWED_HOSTS: aduan-hub
+    volumes:
+      - openwa_data:/app/data
+    networks: [aduan_net]
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:2785/api/infra/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+volumes:
+  aduan_data:
+  openwa_data:
+
+networks:
+  aduan_net:
+

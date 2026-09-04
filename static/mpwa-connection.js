@@ -1,0 +1,21 @@
+(()=>{
+  const root=document.querySelector('.mpwa-control'); if(!root)return;
+  const csrf=document.querySelector('meta[name="csrf-token"]')?.content||'';
+  const badge=document.querySelector('#mpwa-badge'),badgeText=document.querySelector('#mpwa-badge-text');
+  const number=document.querySelector('#mpwa-number'),detail=document.querySelector('#mpwa-detail'),message=document.querySelector('#mpwa-message');
+  const connect=document.querySelector('#mpwa-connect'),disconnect=document.querySelector('#mpwa-disconnect'),refresh=document.querySelector('#mpwa-refresh');
+  const dialog=document.querySelector('#mpwa-qr-dialog'),image=document.querySelector('#mpwa-qr-image'),loading=document.querySelector('#mpwa-qr-loading'),qrStatus=document.querySelector('#mpwa-qr-status');
+  let timer=0;
+  const busy=(button,on)=>{button.disabled=on;button.classList.toggle('loading',on)};
+  const announce=(text,type='')=>{message.textContent=text;message.className=`mpwa-message ${type}`};
+  const render=data=>{const online=Boolean(data.connected);badge.classList.toggle('offline',!online);badgeText.textContent=online?'Terhubung':'Terputus';number.textContent=data.phone?`+${data.phone}`:'—';detail.textContent=online?'MPWA siap menerima dan mengirim pesan.':(data.configured?'Perangkat belum terhubung.':'Konfigurasi MPWA belum lengkap.');connect.disabled=online||!data.configured;disconnect.disabled=!online;if(online&&dialog?.open)closeQr();return online};
+  const api=async(url,method='GET')=>{const response=await fetch(url,{method,headers:{Accept:'application/json','X-CSRF-Token':csrf}});const data=await response.json().catch(()=>({}));if(!response.ok)throw Error(data.error||'Permintaan MPWA gagal.');return data};
+  const status=async(silent=false)=>{if(!silent)busy(refresh,true);try{const data=await api(root.dataset.statusUrl);render(data);return data}catch(error){render({connected:false,configured:true});if(!silent)announce(error.message,'error');return {connected:false}}finally{if(!silent)busy(refresh,false)}};
+  const closeQr=()=>{clearTimeout(timer);timer=0;if(dialog?.open)dialog.close()};
+  const watch=async()=>{if(!dialog?.open)return;const state=await status(true);if(state.connected){announce('Nomor WhatsApp berhasil terhubung ke MPWA.','success');return}timer=setTimeout(watch,1800)};
+  refresh.addEventListener('click',()=>status());
+  connect.addEventListener('click',async()=>{busy(connect,true);announce('Meminta kode QR dari MPWA…');try{const data=await api(root.dataset.connectUrl,'POST');if(data.connected){render(data);announce('MPWA sudah terhubung.','success');return}if(!data.qr)throw Error(data.message||'Kode QR belum tersedia. Coba kembali.');if(typeof dialog.showModal==='function')dialog.showModal();else dialog.setAttribute('open','');loading.hidden=true;image.hidden=false;image.src=data.qr;qrStatus.textContent='Pindai kode ini melalui menu Perangkat tertaut di WhatsApp.';clearTimeout(timer);timer=setTimeout(watch,1200)}catch(error){announce(error.message,'error')}finally{busy(connect,false)}});
+  disconnect.addEventListener('click',async()=>{if(!confirm('Putuskan koneksi MPWA? Pesan tidak dapat dikirim sampai nomor dihubungkan kembali.'))return;busy(disconnect,true);announce('Memutuskan koneksi MPWA…');try{await api(root.dataset.disconnectUrl,'POST');render({connected:false,configured:true,phone:number.textContent.replace(/\D/g,'')});announce('Koneksi MPWA berhasil diputus.','success')}catch(error){announce(error.message,'error')}finally{busy(disconnect,false)}});
+  document.querySelector('#mpwa-qr-close')?.addEventListener('click',closeQr);dialog?.addEventListener('cancel',event=>{event.preventDefault();closeQr()});
+  status(true);setInterval(()=>{if(document.visibilityState==='visible'&&!dialog?.open)status(true)},15000);
+})();

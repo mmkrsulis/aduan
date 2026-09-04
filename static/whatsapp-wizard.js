@@ -21,6 +21,7 @@
   const qrImage=document.querySelector('#wa-qr-image');
   const qrLoading=document.querySelector('#wa-qr-loading');
   const qrStatus=document.querySelector('#wa-qr-status');
+  const qrRestart=document.querySelector('#wa-qr-restart');
   let qrTimer=0,qrStatusTimer=0;
 
   const formatPhone=value=>value?`+${value.replace(/^(\d{2})(\d{3})(\d+)/,'$1 $2 $3')}`:'—';
@@ -30,9 +31,12 @@
   const closeQr=()=>{clearTimeout(qrTimer);clearTimeout(qrStatusTimer);qrTimer=0;qrStatusTimer=0;if(qrDialog?.open)qrDialog.close()};
   const refreshQr=()=>{
     if(!qrDialog?.open)return;
+    clearTimeout(qrTimer);
+    qrImage.onload=null;qrImage.onerror=null;qrImage.removeAttribute('src');
+    if(qrRestart)busy(qrRestart,true);
     qrLoading.hidden=false;qrImage.hidden=true;qrStatus.textContent=id?'Meminta kode QR terbaru…':'Requesting the latest QR code…';
-    qrImage.onload=()=>{qrLoading.hidden=true;qrImage.hidden=false;qrStatus.textContent=id?'Pindai kode ini melalui menu Perangkat tertaut di WhatsApp.':'Scan this code from Linked devices in WhatsApp.';qrTimer=setTimeout(refreshQr,20000)};
-    qrImage.onerror=()=>{qrLoading.hidden=false;qrImage.hidden=true;qrStatus.textContent=id?'QR belum siap. Mencoba kembali…':'QR is not ready. Retrying…';qrTimer=setTimeout(refreshQr,1500)};
+    qrImage.onload=()=>{if(qrRestart)busy(qrRestart,false);qrLoading.hidden=true;qrImage.hidden=false;qrStatus.textContent=id?'Pindai kode ini melalui menu Perangkat tertaut di WhatsApp.':'Scan this code from Linked devices in WhatsApp.';qrTimer=setTimeout(refreshQr,20000)};
+    qrImage.onerror=()=>{if(qrRestart)busy(qrRestart,false);qrLoading.hidden=false;qrImage.hidden=true;qrStatus.textContent=id?'QR belum siap. Mencoba kembali otomatis…':'QR is not ready. Retrying automatically…';qrTimer=setTimeout(refreshQr,2500)};
     qrImage.src=`${wizard.dataset.qrUrl}?t=${Date.now()}`;
   };
   const watchQrStatus=async()=>{if(!qrDialog?.open)return;const state=await status(true);if(state.connected){announce(id?`WhatsApp ${formatPhone(state.phone)} berhasil terhubung.`:`WhatsApp ${formatPhone(state.phone)} connected successfully.`,'success');return}qrStatusTimer=setTimeout(watchQrStatus,1500)};
@@ -84,6 +88,7 @@
     finally{busy(testButton,false)}
   });
   scanLink?.addEventListener('click',openQr);
+  qrRestart?.addEventListener('click',refreshQr);
   document.querySelector('#wa-qr-close')?.addEventListener('click',closeQr);
   qrDialog?.addEventListener('cancel',event=>{event.preventDefault();closeQr()});
   disconnect.addEventListener('click',async()=>{

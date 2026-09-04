@@ -5,7 +5,7 @@ from unittest.mock import patch
 import requests
 
 TEMP = tempfile.TemporaryDirectory()
-os.environ.update(DATABASE_PATH=TEMP.name+'/test.db',OPENWA_DELIVERY='true',WEBHOOK_SECRET='test-secret',SECRET_KEY='test-session-key',FCM_SERVICE_ACCOUNT_FILE='/nonexistent')
+os.environ.update(DATABASE_PATH=TEMP.name+'/test.db',OPENWA_DELIVERY='true',WEBHOOK_SECRET='test-secret',SECRET_KEY='test-session-key')
 import app as application
 import delivery
 import openwa_worker
