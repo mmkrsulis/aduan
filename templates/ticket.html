@@ -57,7 +57,7 @@
 <p>Pelapor menunggu petugas layanan</p>
 </div>
 </div>
-<p class="approval-copy">Konfirmasi sebelum <b>{{chat_request.expires_at}}</b>. Jika tidak dikonfirmasi dalam 5 menit, sistem akan mengirim pemberitahuan otomatis.</p>
+<p class="approval-copy">Konfirmasi sebelum <b>{{chat_request.expires_at}}</b>. Jika tidak dikonfirmasi dalam {{chat_timeout_minutes}} menit, sistem akan mengirim pemberitahuan otomatis.</p>
 <button name="action" value="approve_chat" class="primary wide">Konfirmasi dan hubungkan</button>
 </section>{% endif %}
     <section class="side-section">

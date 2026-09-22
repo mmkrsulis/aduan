@@ -94,10 +94,14 @@ class DeliveryTests(unittest.TestCase):
         self.assertEqual(self.client.get('/').status_code,200)
 
     def test_whatsapp_replacement_wizard(self):
+        self.con.execute('UPDATE organizations SET public_whatsapp=? WHERE id=?',('628000000000',self.ticket['org_id']))
+        self.con.commit()
         with patch.object(application,'openwa_call',return_value='628123456789') as gateway:
             status=self.client.get('/settings/whatsapp/status')
             self.assertEqual(status.status_code,200)
             self.assertEqual(status.json['phone'],'628123456789')
+            self.assertTrue(status.json['synced'])
+            self.assertEqual(self.con.execute('SELECT public_whatsapp FROM organizations WHERE id=?',(self.ticket['org_id'],)).fetchone()[0],'628123456789')
             activated=self.client.post('/settings/whatsapp/activate',headers={'X-CSRF-Token':'csrf-test'})
             self.assertEqual(activated.status_code,200)
             self.assertEqual(self.con.execute('SELECT public_whatsapp FROM organizations WHERE id=?',(self.ticket['org_id'],)).fetchone()[0],'628123456789')
@@ -276,7 +280,7 @@ class DeliveryTests(unittest.TestCase):
         self.con.execute("UPDATE users SET phone='628123450000' WHERE id=?",(user['id'],)); self.con.commit()
         with self.client.session_transaction() as current: current.clear()
         try:
-            with patch.object(application.secrets,'randbelow',return_value=123456),patch.object(application,'send_mpwa_for_org',return_value=(True,'sent')) as sender:
+            with patch.object(application,'verify_turnstile',return_value=True),patch.object(application.secrets,'randbelow',return_value=123456),patch.object(application,'send_mpwa_for_org',return_value=(True,'sent')) as sender:
                 response=self.client.post('/forgot-password',data={'phone':'08123450000'})
             self.assertEqual(response.status_code,302); sender.assert_called_once()
             response=self.client.post('/reset-password',data={'code':'123456','password':'PasswordBaru1','confirm_password':'PasswordBaru1'})

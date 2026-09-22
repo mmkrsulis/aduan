@@ -15,6 +15,13 @@ services:
       WEBHOOK_SECRET: ${WEBHOOK_SECRET:-}
       BOOTSTRAP_PASSWORD: ${BOOTSTRAP_PASSWORD:-ChangeMeBeforeLaunch!}
       COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      TURNSTILE_SITE_KEY: ${TURNSTILE_SITE_KEY:-}
+      TURNSTILE_SECRET_KEY: ${TURNSTILE_SECRET_KEY:-}
+      TURNSTILE_EXPECTED_HOSTNAME: ${TURNSTILE_EXPECTED_HOSTNAME:-halokakak.wonogirikab.go.id}
+      OPENWA_CONTROL_URL: ${OPENWA_CONTROL_URL:-http://host.docker.internal:18084}
+      OPENWA_PUBLIC_URL: ${OPENWA_PUBLIC_URL:-http://100.103.199.63:18084}
+      OPENWA_SESSION_ID: ${OPENWA_SESSION_ID:-default}
+      WA_API_KEY: ${WA_API_KEY:-}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:

@@ -31,6 +31,9 @@
 <label>{{'Timeout sesi chat (menit)' if lang=='id' else 'Chat session timeout (minutes)'}}<input name="session_timeout_minutes" type="number" min="0" max="1440" value="{{flow.session_timeout_minutes if flow.session_timeout_minutes is not none else 30}}">
 <small>{{'Default 30 menit. Isi 0 untuk tanpa batas waktu.' if lang=='id' else 'Default is 30 minutes. Use 0 for no timeout.'}}</small>
 </label>
+<label>{{'Batas respons admin (menit)' if lang=='id' else 'Admin response timeout (minutes)'}}<input name="admin_response_timeout_minutes" type="number" min="1" max="1440" value="{{flow.admin_response_timeout_minutes if flow.admin_response_timeout_minutes is not none else 5}}" required>
+<small>{{'Waktu maksimal admin menerima permintaan Chat dengan admin sebelum pelapor mendapat pesan tidak tersedia.' if lang=='id' else 'Maximum time for an admin to accept a live-chat request before the unavailable message is sent.'}}</small>
+</label>
 </div>
       <div class="command-guide">
 <b>{{'Perintah yang dapat digunakan pelapor' if lang=='id' else 'Citizen commands'}}</b>
@@ -66,7 +69,7 @@
 </div>
 <div class="variable-help">
 <b>{{'Variabel otomatis' if lang=='id' else 'Automatic variables'}}</b>
-<code>{organization} {name} {location} {description} {code}</code>
+<code>{organization} {name} {location} {description} {code} {chat_timeout_minutes}</code>
 </div>
 </div>
   </div>

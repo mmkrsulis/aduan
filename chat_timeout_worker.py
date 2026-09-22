@@ -35,12 +35,13 @@ def process_one():
         changed=con.execute("UPDATE chat_requests SET status='processing' WHERE id=? AND status='pending'",(chat["id"],)).rowcount; con.commit()
         if not changed: return True
         org=con.execute("SELECT * FROM organizations WHERE id=?",(chat["org_id"],)).fetchone(); flow=con.execute("SELECT * FROM flow_configs WHERE org_id=?",(chat["org_id"],)).fetchone()
+        admin_timeout=max(1,min(1440,int(flow["admin_response_timeout_minutes"] or 5)))
         message=flow["chat_timeout_id" if chat["language"]=="id" else "chat_timeout_en"]
         if send(org,chat["phone"],message):
             con.execute("UPDATE chat_requests SET status='expired',expired_at=CURRENT_TIMESTAMP WHERE id=?",(chat["id"],))
             con.execute("UPDATE conversation_states SET step='menu',human_takeover=0,data='{}',updated_at=CURRENT_TIMESTAMP WHERE org_id=? AND phone=?",(chat["org_id"],chat["phone"]))
             con.execute("INSERT INTO messages(ticket_id,direction,body,sender,delivery_status) VALUES(?,?,?,?,?)",(chat["ticket_id"],"out",message,"Sistem","sent"))
-            notification=(chat["org_id"],chat["ticket_id"],"Permintaan chat kedaluwarsa","Tidak ada petugas yang mengonfirmasi dalam 5 menit.")
+            notification=(chat["org_id"],chat["ticket_id"],"Permintaan chat kedaluwarsa",f"Tidak ada petugas yang mengonfirmasi dalam {admin_timeout} menit.")
         else: con.execute("UPDATE chat_requests SET status='pending' WHERE id=?",(chat["id"],))
         con.commit()
         if notification:

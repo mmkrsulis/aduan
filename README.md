@@ -22,6 +22,8 @@ The Android application is not part of this public repository. It uses AduanHub'
 
 AduanHub Web Edition is licensed under the GNU Affero General Public License v3.0 or later (`AGPL-3.0-or-later`). If you run a modified version as a network service, you must offer its corresponding source code to its users under the same license. The premium Android application is a separate product and is not included under this repository's license.
 
+GNU AGPL is the network-service variant of the GNU GPL family. AduanHub remains open-source and may be used, studied, modified, and redistributed under the terms in [LICENSE](LICENSE); the Affero requirement ensures users of a modified hosted version can also obtain its source code.
+
 ## Run
 
 ```bash

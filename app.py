@@ -16,6 +16,30 @@ from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
 
+def _load_local_env():
+    # Load simple KEY=VALUE pairs without overriding real environment variables.
+    env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+    try:
+        with open(env_path, "r", encoding="utf-8") as env_file:
+            for raw_line in env_file:
+                line = raw_line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                if line.startswith("export "):
+                    line = line[7:].lstrip()
+                key, value = line.split("=", 1)
+                key = key.strip()
+                value = value.strip()
+                if not key:
+                    continue
+                if len(value) >= 2 and value[0] == value[-1] and value[0] in (chr(34), chr(39)):
+                    value = value[1:-1]
+                os.environ.setdefault(key, value)
+    except FileNotFoundError:
+        pass
+
+_load_local_env()
+
 app = Flask(__name__)
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
 app.secret_key = os.getenv("SECRET_KEY", secrets.token_hex(32))
@@ -28,6 +52,13 @@ OPENWA_CONTROL_URL = os.getenv("OPENWA_CONTROL_URL", "http://host.docker.interna
 OPENWA_PUBLIC_URL = os.getenv("OPENWA_PUBLIC_URL", "http://100.103.199.63:8080").rstrip("/")
 OPENWA_API_KEY = os.getenv("WA_API_KEY", "")
 OPENWA_SESSION_ID = os.getenv("OPENWA_SESSION_ID", "")
+TURNSTILE_SITE_KEY = os.getenv("TURNSTILE_SITE_KEY", "0x4AAAAAAE5g7-gvP8HsrLMs")
+TURNSTILE_SECRET_KEY = os.getenv("TURNSTILE_SECRET_KEY", "")
+TURNSTILE_EXPECTED_HOSTNAME = os.getenv(
+    "TURNSTILE_EXPECTED_HOSTNAME",
+    "halokakak.wonogirikab.go.id"
+)
+TURNSTILE_VERIFY_URL = "https://challenges.cloudflare.com/turnstile/v0/siteverify"
 ALLOWED_MEDIA = {"image/jpeg":"jpg","image/png":"png","image/webp":"webp","video/mp4":"mp4","audio/mpeg":"mp3","audio/ogg":"ogg","application/pdf":"pdf"}
 
 def api_token_version(password_hash):
@@ -103,10 +134,10 @@ CREATE TABLE IF NOT EXISTS tickets(id INTEGER PRIMARY KEY, org_id INTEGER NOT NU
 CREATE TABLE IF NOT EXISTS messages(id INTEGER PRIMARY KEY, ticket_id INTEGER NOT NULL, direction TEXT NOT NULL, body TEXT NOT NULL, sender TEXT, internal INTEGER DEFAULT 0, attachment_path TEXT, attachment_name TEXT, attachment_type TEXT, delivery_status TEXT DEFAULT 'received', created_at TEXT DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(ticket_id) REFERENCES tickets(id) ON DELETE CASCADE);
 CREATE TABLE IF NOT EXISTS audit_logs(id INTEGER PRIMARY KEY, org_id INTEGER NOT NULL, user_id INTEGER, action TEXT NOT NULL, entity TEXT, entity_id INTEGER, metadata TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS units(id INTEGER PRIMARY KEY, org_id INTEGER NOT NULL, name TEXT NOT NULL, officer_name TEXT, officer_phone TEXT, active INTEGER DEFAULT 1, created_at TEXT DEFAULT CURRENT_TIMESTAMP, UNIQUE(org_id,name), FOREIGN KEY(org_id) REFERENCES organizations(id));
-CREATE TABLE IF NOT EXISTS categories(id INTEGER PRIMARY KEY, org_id INTEGER NOT NULL, name TEXT NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP, UNIQUE(org_id,name), FOREIGN KEY(org_id) REFERENCES organizations(id));
+CREATE TABLE IF NOT EXISTS categories(id INTEGER PRIMARY KEY, org_id INTEGER NOT NULL, name TEXT NOT NULL, unit_id INTEGER, created_at TEXT DEFAULT CURRENT_TIMESTAMP, UNIQUE(org_id,name), FOREIGN KEY(org_id) REFERENCES organizations(id), FOREIGN KEY(unit_id) REFERENCES units(id) ON DELETE SET NULL);
 CREATE TABLE IF NOT EXISTS quick_replies(id INTEGER PRIMARY KEY, org_id INTEGER NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL, position INTEGER DEFAULT 0, created_at TEXT DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(org_id) REFERENCES organizations(id) ON DELETE CASCADE);
 CREATE TABLE IF NOT EXISTS notifications(id INTEGER PRIMARY KEY, org_id INTEGER NOT NULL, user_id INTEGER, ticket_id INTEGER, title TEXT NOT NULL, body TEXT, read_at TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(org_id) REFERENCES organizations(id), FOREIGN KEY(user_id) REFERENCES users(id), FOREIGN KEY(ticket_id) REFERENCES tickets(id));
-CREATE TABLE IF NOT EXISTS flow_configs(id INTEGER PRIMARY KEY, org_id INTEGER UNIQUE NOT NULL, enabled INTEGER DEFAULT 1, default_language TEXT DEFAULT 'id', welcome_id TEXT, welcome_en TEXT, service_info_id TEXT, service_info_en TEXT, confirmation_id TEXT, confirmation_en TEXT, completion_id TEXT, completion_en TEXT, forward_template_id TEXT, forward_template_en TEXT, status_template_id TEXT, status_template_en TEXT, unavailable_id TEXT, unavailable_en TEXT, menu_items TEXT DEFAULT '[]', ai_enabled INTEGER DEFAULT 0, ai_prompt TEXT, ai_confidence REAL DEFAULT .8, session_timeout_minutes INTEGER DEFAULT 30, office_hours TEXT DEFAULT 'Monday-Friday, 08:00-16:00', updated_at TEXT DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(org_id) REFERENCES organizations(id));
+CREATE TABLE IF NOT EXISTS flow_configs(id INTEGER PRIMARY KEY, org_id INTEGER UNIQUE NOT NULL, enabled INTEGER DEFAULT 1, default_language TEXT DEFAULT 'id', welcome_id TEXT, welcome_en TEXT, service_info_id TEXT, service_info_en TEXT, confirmation_id TEXT, confirmation_en TEXT, completion_id TEXT, completion_en TEXT, forward_template_id TEXT, forward_template_en TEXT, status_template_id TEXT, status_template_en TEXT, unavailable_id TEXT, unavailable_en TEXT, menu_items TEXT DEFAULT '[]', ai_enabled INTEGER DEFAULT 0, ai_prompt TEXT, ai_confidence REAL DEFAULT .8, session_timeout_minutes INTEGER DEFAULT 30, admin_response_timeout_minutes INTEGER DEFAULT 5, office_hours TEXT DEFAULT 'Monday-Friday, 08:00-16:00', updated_at TEXT DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(org_id) REFERENCES organizations(id));
 CREATE TABLE IF NOT EXISTS conversation_states(id INTEGER PRIMARY KEY, org_id INTEGER NOT NULL, phone TEXT NOT NULL, step TEXT NOT NULL DEFAULT 'menu', language TEXT DEFAULT 'id', data TEXT DEFAULT '{}', human_takeover INTEGER DEFAULT 0, updated_at TEXT DEFAULT CURRENT_TIMESTAMP, UNIQUE(org_id,phone), FOREIGN KEY(org_id) REFERENCES organizations(id));
 CREATE TABLE IF NOT EXISTS chat_requests(id INTEGER PRIMARY KEY, org_id INTEGER NOT NULL, ticket_id INTEGER NOT NULL, phone TEXT NOT NULL, language TEXT DEFAULT 'id', status TEXT DEFAULT 'pending', expires_at TEXT NOT NULL, approved_by INTEGER, approved_at TEXT, expired_at TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(org_id) REFERENCES organizations(id), FOREIGN KEY(ticket_id) REFERENCES tickets(id) ON DELETE CASCADE, FOREIGN KEY(approved_by) REFERENCES users(id));
 CREATE TABLE IF NOT EXISTS password_reset_codes(id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL, code_hash TEXT NOT NULL, expires_at TEXT NOT NULL, used_at TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE);
@@ -126,8 +157,46 @@ def close_db(_=None):
 
 @app.after_request
 def security_headers(response):
-    response.headers["X-Content-Type-Options"]="nosniff"; response.headers["X-Frame-Options"]="DENY"; response.headers["Referrer-Policy"]="strict-origin-when-cross-origin"; response.headers["Permissions-Policy"]="camera=(), microphone=(), geolocation=()"
-    response.headers["Content-Security-Policy"]="default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; script-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'"
+    response.headers["X-Content-Type-Options"]="nosniff"
+    response.headers["X-Frame-Options"]="DENY"
+    response.headers["Referrer-Policy"]="strict-origin-when-cross-origin"
+    response.headers["Permissions-Policy"]="camera=(), microphone=(), geolocation=()"
+    response.headers["Content-Security-Policy"]=(
+        "default-src 'self'; "
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+        "font-src https://fonts.gstatic.com; "
+        "script-src 'self' 'unsafe-inline' https://challenges.cloudflare.com; "
+        "img-src 'self' data:; "
+        "connect-src 'self' https://challenges.cloudflare.com; "
+        "frame-src https://challenges.cloudflare.com"
+    )
+
+    # Inject Turnstile into the existing auth forms so app.py is the only file
+    # that must be replaced for this urgent deployment.
+    if (
+        request.endpoint in ("login", "forgot_password")
+        and response.status_code == 200
+        and response.mimetype == "text/html"
+        and TURNSTILE_SITE_KEY
+    ):
+        html=response.get_data(as_text=True)
+        script='<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>'
+        if "challenges.cloudflare.com/turnstile/v0/api.js" not in html:
+            html=html.replace("</head>",script+"</head>",1)
+
+        action="login" if request.endpoint=="login" else "forgot_password"
+        widget=(
+            f'<div class="cf-turnstile" data-sitekey="{TURNSTILE_SITE_KEY}" '
+            f'data-action="{action}"></div>'
+        )
+        if 'class="cf-turnstile"' not in html:
+            marker='<button class="primary wide">'
+            if marker in html:
+                html=html.replace(marker,widget+marker,1)
+            else:
+                html=html.replace("</form>",widget+"</form>",1)
+        response.set_data(html)
+
     return response
 
 def init_db():
@@ -140,7 +209,8 @@ def init_db():
       "tickets":{"channel":"TEXT DEFAULT 'whatsapp'","email_subject":"TEXT"},
       "messages":{"attachment_path":"TEXT","attachment_name":"TEXT","attachment_type":"TEXT","delivery_status":"TEXT DEFAULT 'received'","channel":"TEXT DEFAULT 'whatsapp'","external_id":"TEXT"},
       "units":{"officer_user_id":"INTEGER"},
-      "flow_configs":{"forward_template_id":"TEXT","forward_template_en":"TEXT","status_template_id":"TEXT","status_template_en":"TEXT","unavailable_id":"TEXT","unavailable_en":"TEXT","identity_prompt_id":"TEXT","identity_prompt_en":"TEXT","chat_waiting_id":"TEXT","chat_waiting_en":"TEXT","chat_connected_id":"TEXT","chat_connected_en":"TEXT","chat_timeout_id":"TEXT","chat_timeout_en":"TEXT","idle_enabled":"INTEGER DEFAULT 1","idle_minutes":"INTEGER DEFAULT 60","idle_message_id":"TEXT","idle_message_en":"TEXT","menu_items":"TEXT DEFAULT '[]'","ai_enabled":"INTEGER DEFAULT 0","ai_prompt":"TEXT","ai_confidence":"REAL DEFAULT .8","session_timeout_minutes":"INTEGER DEFAULT 30"}
+      "categories":{"unit_id":"INTEGER REFERENCES units(id) ON DELETE SET NULL"},
+      "flow_configs":{"forward_template_id":"TEXT","forward_template_en":"TEXT","status_template_id":"TEXT","status_template_en":"TEXT","unavailable_id":"TEXT","unavailable_en":"TEXT","identity_prompt_id":"TEXT","identity_prompt_en":"TEXT","chat_waiting_id":"TEXT","chat_waiting_en":"TEXT","chat_connected_id":"TEXT","chat_connected_en":"TEXT","chat_timeout_id":"TEXT","chat_timeout_en":"TEXT","idle_enabled":"INTEGER DEFAULT 1","idle_minutes":"INTEGER DEFAULT 60","idle_message_id":"TEXT","idle_message_en":"TEXT","menu_items":"TEXT DEFAULT '[]'","ai_enabled":"INTEGER DEFAULT 0","ai_prompt":"TEXT","ai_confidence":"REAL DEFAULT .8","session_timeout_minutes":"INTEGER DEFAULT 30","admin_response_timeout_minutes":"INTEGER DEFAULT 5"}
     }
     for table,columns in migrations.items():
         existing={r[1] for r in con.execute(f"PRAGMA table_info({table})")}
@@ -181,6 +251,8 @@ def init_db():
             "Your complaint has been registered as {code}. Keep this number to check its status."
         ))
     con.execute("UPDATE flow_configs SET office_hours='Senin–Jumat, 08.00–16.00' WHERE office_hours='Monday-Friday, 08:00-16:00'")
+    con.execute("UPDATE flow_configs SET admin_response_timeout_minutes=5 WHERE admin_response_timeout_minutes IS NULL OR admin_response_timeout_minutes<1")
+    con.execute("UPDATE flow_configs SET chat_waiting_id=replace(chat_waiting_id,'maksimal 5 menit','maksimal {chat_timeout_minutes} menit'),chat_waiting_en=replace(chat_waiting_en,'up to 5 minutes','up to {chat_timeout_minutes} minutes')")
     con.execute("UPDATE flow_configs SET welcome_id=replace(welcome_id,'Balas dengan angka 1, 2, atau 3.','Balas dengan angka 1, 2, 3, atau 4.'),welcome_en=replace(welcome_en,'Reply with 1, 2, or 3.','Reply with 1, 2, 3, or 4.')")
     con.execute("UPDATE organizations SET ticket_prefix=upper(substr(slug,1,3)) WHERE ticket_prefix IS NULL OR ticket_prefix='' OR ticket_prefix='ADU'")
     con.execute("INSERT OR IGNORE INTO categories(org_id,name) SELECT org_id,category FROM tickets WHERE category IS NOT NULL AND trim(category)<>''")
@@ -399,14 +471,53 @@ def language(code):
 @app.route("/health")
 def health(): return jsonify(status="ok")
 
+def verify_turnstile(expected_action):
+    token=(request.form.get("cf-turnstile-response") or "").strip()
+    if not token:
+        return False
+    if not TURNSTILE_SECRET_KEY:
+        app.logger.error("TURNSTILE_SECRET_KEY belum dikonfigurasi")
+        return False
+
+    payload={"secret":TURNSTILE_SECRET_KEY,"response":token}
+    if request.remote_addr:
+        payload["remoteip"]=request.remote_addr
+
+    try:
+        verify_response=requests.post(
+            TURNSTILE_VERIFY_URL,
+            data=payload,
+            timeout=(3,5),
+        )
+        verify_response.raise_for_status()
+        result=verify_response.json()
+    except (requests.RequestException,ValueError):
+        app.logger.warning("Verifikasi Turnstile gagal karena API/network error")
+        return False
+
+    if not result.get("success"):
+        app.logger.warning("Turnstile menolak token; error_codes=%s",result.get("error-codes",[]))
+        return False
+    if result.get("hostname")!=TURNSTILE_EXPECTED_HOSTNAME:
+        app.logger.warning("Turnstile hostname mismatch: %s",result.get("hostname"))
+        return False
+    if result.get("action")!=expected_action:
+        app.logger.warning("Turnstile action mismatch: %s",result.get("action"))
+        return False
+    return True
+
+
 @app.route("/login",methods=["GET","POST"])
 def login():
     if request.method=="POST":
+        if not verify_turnstile("login"):
+            flash("Verifikasi keamanan gagal. Silakan coba kembali.","error")
+            return redirect(url_for("login"))
         identity=(request.form.get("identity") or request.form.get("email") or "").strip().lower(); phone=normalize_whatsapp(identity)
         u=db().execute("SELECT u.*,o.name org_name FROM users u JOIN organizations o ON o.id=u.org_id WHERE (lower(u.email)=? OR u.phone=?) AND u.active=1",(identity,phone)).fetchone()
-        if u and check_password_hash(u["password"],request.form["password"]):
+        if u and check_password_hash(u["password"],request.form.get("password","")):
             remember=request.form.get("remember")=="1"; session.clear(); session.permanent=remember; session.update(uid=u["id"],org_id=u["org_id"],name=u["name"],role=u["role"],unit=u["unit"] or "",org_name=u["org_name"],lang="id"); db().execute("UPDATE users SET last_login=CURRENT_TIMESTAMP WHERE id=?",(u["id"],)); db().commit(); return redirect(url_for("dashboard"))
-        flash("Invalid credentials","error")
+        flash("Email/nomor WhatsApp atau kata sandi salah.","error")
     login_brand=db().execute("SELECT name,app_name,logo,icon,accent,terminology FROM organizations ORDER BY id LIMIT 1").fetchone()
     return render_template("login.html",login_brand=login_brand)
 
@@ -414,6 +525,9 @@ def login():
 def forgot_password():
     login_brand=db().execute("SELECT name,app_name,logo,icon,accent,terminology FROM organizations ORDER BY id LIMIT 1").fetchone()
     if request.method=="POST":
+        if not verify_turnstile("forgot_password"):
+            flash("Verifikasi keamanan gagal. Silakan coba kembali.","error")
+            return redirect(url_for("forgot_password"))
         phone=normalize_whatsapp(request.form.get("phone","")); user=db().execute("SELECT * FROM users WHERE phone=? AND active=1",(phone,)).fetchone()
         if user:
             recent=db().execute("SELECT 1 FROM password_reset_codes WHERE user_id=? AND created_at>datetime('now','-1 minute')",(user["id"],)).fetchone()
@@ -593,7 +707,8 @@ def ticket(tid):
                 else: flash(msg,"error")
         db().commit(); return redirect(url_for("ticket",tid=tid))
     msgs=db().execute("SELECT * FROM messages WHERE ticket_id=? ORDER BY created_at",(tid,)).fetchall(); users=db().execute("SELECT * FROM users WHERE org_id=? AND active=1 AND role IN ('supervisor','agent') ORDER BY unit,name",(session["org_id"],)).fetchall(); units=db().execute("SELECT * FROM units WHERE org_id=? ORDER BY name",(session["org_id"],)).fetchall(); categories=db().execute("SELECT * FROM categories WHERE org_id=? ORDER BY name",(session["org_id"],)).fetchall(); quick_replies=db().execute("SELECT * FROM quick_replies WHERE org_id=? ORDER BY position,id",(session["org_id"],)).fetchall(); activities=db().execute("SELECT a.*,u.name user_name FROM audit_logs a LEFT JOIN users u ON u.id=a.user_id WHERE a.org_id=? AND a.entity='ticket' AND a.entity_id=? ORDER BY a.created_at DESC LIMIT 20",(session["org_id"],tid)).fetchall(); chat_request=db().execute("SELECT * FROM chat_requests WHERE ticket_id=? ORDER BY id DESC LIMIT 1",(tid,)).fetchone()
-    return render_template("ticket.html",t=t,msgs=msgs,users=users,units=units,categories=categories,quick_replies=quick_replies,activities=activities,chat_request=chat_request,can_reply=can_reply,can_manage=is_central_admin(),openwa_delivery=delivery.enabled() and t['channel']!='email')
+    chat_timeout_minutes=db().execute("SELECT admin_response_timeout_minutes FROM flow_configs WHERE org_id=?",(session["org_id"],)).fetchone()
+    return render_template("ticket.html",t=t,msgs=msgs,users=users,units=units,categories=categories,quick_replies=quick_replies,activities=activities,chat_request=chat_request,chat_timeout_minutes=(chat_timeout_minutes[0] if chat_timeout_minutes else 5),can_reply=can_reply,can_manage=is_central_admin(),openwa_delivery=delivery.enabled() and t['channel']!='email')
 
 @app.post("/tickets/<int:tid>/delete")
 @login_required
@@ -748,7 +863,14 @@ def delete_user(uid):
 def whatsapp_status():
     try:
         phone=normalize_whatsapp(openwa_call("getHostNumber"))
-        return jsonify(connected=bool(phone),phone=phone,scanner_ready=not bool(phone),scan_url=OPENWA_PUBLIC_URL)
+        synced=False
+        if phone:
+            current=db().execute("SELECT public_whatsapp FROM organizations WHERE id=?",(session["org_id"],)).fetchone()
+            if not current or current["public_whatsapp"]!=phone:
+                db().execute("UPDATE organizations SET public_whatsapp=? WHERE id=?",(phone,session["org_id"]))
+                db().execute("INSERT INTO audit_logs(org_id,user_id,action,entity,entity_id,metadata) VALUES(?,?,?,?,?,?)",(session["org_id"],session.get("uid"),"openwa.auto_activated","organization",session["org_id"],json.dumps({"phone_suffix":phone[-4:]})))
+                db().commit(); synced=True
+        return jsonify(connected=bool(phone),phone=phone,scanner_ready=not bool(phone),scan_url=OPENWA_PUBLIC_URL,synced=synced)
     except (requests.RequestException,ValueError,TypeError):
         try:
             scanner=requests.get(f"{OPENWA_CONTROL_URL}/api/sessions/{OPENWA_SESSION_ID}/qr",headers={"X-API-Key":OPENWA_API_KEY},timeout=(2,3))
@@ -876,7 +998,7 @@ def settings():
         try: ticket_format.format_map({"prefix":prefix,"year":2026,"month":"08","day":"13","number":1})
         except (KeyError,ValueError): flash("Format nomor aduan tidak valid.","error"); return redirect(url_for("settings",section="general"))
         db().execute("UPDATE organizations SET name=?,app_name=?,accent=?,terminology=?,timezone=?,ticket_prefix=?,ticket_format=?,logo=?,icon=?,complaint_count_offset=?,resolved_count_offset=? WHERE id=?",(request.form["name"],request.form.get("app_name","AduanHub").strip()[:60] or "AduanHub",accent,request.form["terminology"],request.form.get("timezone","Asia/Jakarta"),prefix,ticket_format,logo,icon,complaint_offset,resolved_offset,session["org_id"])); db().commit(); session["org_name"]=request.form["name"]; audit("organization.updated","organization",session["org_id"]); flash("Pengaturan berhasil disimpan","success")
-    org=db().execute("SELECT * FROM organizations WHERE id=?",(session["org_id"],)).fetchone(); units=db().execute("SELECT un.*,u.name officer_user_name,u.phone officer_user_phone FROM units un LEFT JOIN users u ON u.id=un.officer_user_id WHERE un.org_id=? ORDER BY un.name",(session["org_id"],)).fetchall(); categories=db().execute("SELECT c.*,(SELECT count(*) FROM tickets t WHERE t.org_id=c.org_id AND t.category=c.name) usage_count FROM categories c WHERE c.org_id=? ORDER BY c.name",(session["org_id"],)).fetchall(); quick_replies=db().execute("SELECT * FROM quick_replies WHERE org_id=? ORDER BY position,id",(session["org_id"],)).fetchall(); flow=db().execute("SELECT * FROM flow_configs WHERE org_id=?",(session["org_id"],)).fetchone(); return render_template("settings.html",org=org,email=email_config(session["org_id"]),units=units,categories=categories,quick_replies=quick_replies,flow=flow,section=section,openwa_public_url=OPENWA_PUBLIC_URL,openwa_qr_url=url_for('whatsapp_qr'),openwa_delivery=delivery.enabled())
+    org=db().execute("SELECT * FROM organizations WHERE id=?",(session["org_id"],)).fetchone(); units=db().execute("SELECT un.*,u.name officer_user_name,u.phone officer_user_phone FROM units un LEFT JOIN users u ON u.id=un.officer_user_id WHERE un.org_id=? ORDER BY un.name",(session["org_id"],)).fetchall(); categories=db().execute("SELECT c.*,un.name unit_name,(SELECT count(*) FROM tickets t WHERE t.org_id=c.org_id AND t.category=c.name) usage_count FROM categories c LEFT JOIN units un ON un.id=c.unit_id AND un.org_id=c.org_id WHERE c.org_id=? ORDER BY c.name",(session["org_id"],)).fetchall(); quick_replies=db().execute("SELECT * FROM quick_replies WHERE org_id=? ORDER BY position,id",(session["org_id"],)).fetchall(); flow=db().execute("SELECT * FROM flow_configs WHERE org_id=?",(session["org_id"],)).fetchone(); return render_template("settings.html",org=org,email=email_config(session["org_id"]),units=units,categories=categories,quick_replies=quick_replies,flow=flow,section=section,openwa_public_url=OPENWA_PUBLIC_URL,openwa_qr_url=url_for('whatsapp_qr'),openwa_delivery=delivery.enabled())
 
 @app.post("/settings/quick-replies")
 @login_required
@@ -927,10 +1049,22 @@ def test_email_connection():
 @roles("owner","admin")
 def create_category():
     name=request.form.get("name","").strip()[:80]
+    unit_id=request.form.get("unit_id",type=int)
+    if unit_id and not db().execute("SELECT 1 FROM units WHERE id=? AND org_id=? AND active=1",(unit_id,session["org_id"])).fetchone(): unit_id=None
     if not name: flash("Nama kategori wajib diisi.","error")
     else:
-        try: db().execute("INSERT INTO categories(org_id,name) VALUES(?,?)",(session["org_id"],name)); db().commit(); audit("category.created","category"); flash("Kategori berhasil ditambahkan.","success")
+        try: db().execute("INSERT INTO categories(org_id,name,unit_id) VALUES(?,?,?)",(session["org_id"],name,unit_id)); db().commit(); audit("category.created","category"); flash("Kategori berhasil ditambahkan.","success")
         except sqlite3.IntegrityError: flash("Kategori tersebut sudah tersedia.","error")
+    return redirect(url_for("settings",section="categories"))
+
+@app.post("/categories/<int:category_id>/update")
+@login_required
+@roles("owner","admin")
+def update_category(category_id):
+    if not db().execute("SELECT 1 FROM categories WHERE id=? AND org_id=?",(category_id,session["org_id"])).fetchone(): return ("Not found",404)
+    unit_id=request.form.get("unit_id",type=int)
+    if unit_id and not db().execute("SELECT 1 FROM units WHERE id=? AND org_id=? AND active=1",(unit_id,session["org_id"])).fetchone(): return ("Invalid unit",400)
+    db().execute("UPDATE categories SET unit_id=? WHERE id=? AND org_id=?",(unit_id,category_id,session["org_id"])); db().commit(); audit("category.updated","category",category_id,{"unit_id":unit_id}); flash("Bidang tujuan kategori diperbarui.","success")
     return redirect(url_for("settings",section="categories"))
 
 @app.post("/categories/<int:category_id>/delete")
@@ -1109,7 +1243,8 @@ def flow_settings():
         for key,label_id,label_en,action,response_id,response_en in rows:
             if key.strip() and label_id.strip(): menu.append({"key":key.strip()[:8],"label_id":label_id.strip()[:100],"label_en":label_en.strip()[:100],"action":action if action in ("new","status","info","chat_admin","custom") else "custom","response_id":response_id.strip()[:4000],"response_en":response_en.strip()[:4000]})
         timeout=max(0,min(1440,int(request.form.get("session_timeout_minutes") or 30)))
-        db().execute("""UPDATE flow_configs SET enabled=?,default_language=?,welcome_id=?,welcome_en=?,service_info_id=?,service_info_en=?,confirmation_id=?,confirmation_en=?,completion_id=?,completion_en=?,forward_template_id=?,forward_template_en=?,status_template_id=?,status_template_en=?,unavailable_id=?,unavailable_en=?,identity_prompt_id=?,identity_prompt_en=?,chat_waiting_id=?,chat_waiting_en=?,chat_connected_id=?,chat_connected_en=?,chat_timeout_id=?,chat_timeout_en=?,office_hours=?,ai_prompt=?,ai_confidence=?,menu_items=?,ai_enabled=?,session_timeout_minutes=?,updated_at=CURRENT_TIMESTAMP WHERE org_id=?""",[1 if request.form.get("enabled") else 0,*values,json.dumps(menu),1 if request.form.get("ai_enabled") else 0,timeout,session["org_id"]]); db().commit(); audit("flow.updated","flow",session["org_id"]); flash("Alur dan template pesan berhasil disimpan","success")
+        admin_timeout=max(1,min(1440,int(request.form.get("admin_response_timeout_minutes") or 5)))
+        db().execute("""UPDATE flow_configs SET enabled=?,default_language=?,welcome_id=?,welcome_en=?,service_info_id=?,service_info_en=?,confirmation_id=?,confirmation_en=?,completion_id=?,completion_en=?,forward_template_id=?,forward_template_en=?,status_template_id=?,status_template_en=?,unavailable_id=?,unavailable_en=?,identity_prompt_id=?,identity_prompt_en=?,chat_waiting_id=?,chat_waiting_en=?,chat_connected_id=?,chat_connected_en=?,chat_timeout_id=?,chat_timeout_en=?,office_hours=?,ai_prompt=?,ai_confidence=?,menu_items=?,ai_enabled=?,session_timeout_minutes=?,admin_response_timeout_minutes=?,updated_at=CURRENT_TIMESTAMP WHERE org_id=?""",[1 if request.form.get("enabled") else 0,*values,json.dumps(menu),1 if request.form.get("ai_enabled") else 0,timeout,admin_timeout,session["org_id"]]); db().commit(); audit("flow.updated","flow",session["org_id"]); flash("Alur dan template pesan berhasil disimpan","success")
     flow=db().execute("SELECT * FROM flow_configs WHERE org_id=?",(session["org_id"],)).fetchone()
     try: menu_items=json.loads(flow["menu_items"] or "[]")
     except ValueError: menu_items=[]
@@ -1127,8 +1262,8 @@ def flow_reply(org,phone,body,name,attachment=None):
     if command in ("RESET","RESET SESSION","HAPUS SESI","ULANG SESI"):
         db().execute("DELETE FROM conversation_states WHERE org_id=? AND phone=?",(org["id"],phone))
         db().execute("UPDATE chat_requests SET status='cancelled' WHERE org_id=? AND phone=? AND status='pending'",(org["id"],phone)); db().commit()
-        db().execute("INSERT INTO conversation_states(org_id,phone,step,language,data,human_takeover) VALUES(?,?,?,?,?,0)",(org["id"],phone,"identity_choice",lang,"{}")); db().commit()
-        prompt=fill(flow["identity_prompt_id" if lang=="id" else "identity_prompt_en"],org)
+        db().execute("INSERT INTO conversation_states(org_id,phone,step,language,data,human_takeover) VALUES(?,?,?,?,?,0)",(org["id"],phone,"menu",lang,"{}")); db().commit()
+        prompt=fill(flow["welcome_id" if lang=="id" else "welcome_en"],org)
         return ("Sesi percakapan berhasil dihapus. Pengujian dimulai dari awal.\n\n" if lang=="id" else "The conversation session has been cleared. Testing starts from the beginning.\n\n")+prompt
     if state and flow["session_timeout_minutes"] and state["step"]!="menu":
         try: expired=(datetime.now(timezone.utc)-datetime.fromisoformat(state["updated_at"]).replace(tzinfo=timezone.utc)).total_seconds()>flow["session_timeout_minutes"]*60
@@ -1141,7 +1276,7 @@ def flow_reply(org,phone,body,name,attachment=None):
     except ValueError: menu=[]
     if command in ("MENU","START","MULAI") or not state:
         db().execute("UPDATE chat_requests SET status='cancelled' WHERE org_id=? AND phone=? AND status='pending'",(org["id"],phone))
-        db().execute("INSERT INTO conversation_states(org_id,phone,step,language,data) VALUES(?,?,?,?,?) ON CONFLICT(org_id,phone) DO UPDATE SET step='identity_choice',language=excluded.language,data='{}',human_takeover=0,updated_at=CURRENT_TIMESTAMP",(org["id"],phone,"identity_choice",lang,"{}")); db().commit(); notice=("Sesi sebelumnya telah berakhir karena tidak ada aktivitas. Silakan mulai kembali.\n\n" if lang=="id" else "Your previous session expired due to inactivity. Please start again.\n\n") if expired else ""; return notice+fill(flow["identity_prompt_id" if lang=="id" else "identity_prompt_en"],org)
+        db().execute("INSERT INTO conversation_states(org_id,phone,step,language,data) VALUES(?,?,?,?,?) ON CONFLICT(org_id,phone) DO UPDATE SET step='menu',language=excluded.language,data='{}',human_takeover=0,updated_at=CURRENT_TIMESTAMP",(org["id"],phone,"menu",lang,"{}")); db().commit(); notice=("Sesi sebelumnya telah berakhir karena tidak ada aktivitas. Silakan mulai kembali.\n\n" if lang=="id" else "Your previous session expired due to inactivity. Please start again.\n\n") if expired else ""; return notice+fill(welcome,org)
     if state["human_takeover"]: return None
     data=json.loads(state["data"] or "{}"); step=state["step"]
     def move(next_step, reply, new_data=None):
@@ -1149,17 +1284,24 @@ def flow_reply(org,phone,body,name,attachment=None):
     if command in ("BATAL","CANCEL"):
         return move("menu",("Proses dibatalkan. Ketik MENU untuk kembali ke menu utama." if lang=="id" else "The process was cancelled. Type MENU to return to the main menu."),{})
     if step=="identity_choice":
-        if command in ("1","NAMA","NAME"): return move("identity_name","Silakan tuliskan nama Anda." if lang=="id" else "Please enter your name.",{})
+        if command in ("1","NAMA","NAME"): return move("identity_name","Silakan tuliskan nama Anda." if lang=="id" else "Please enter your name.",data)
         if command in ("2","RAHASIA","ANONIM","ANONYMOUS"):
-            data={"name":"Pelapor anonim" if lang=="id" else "Anonymous reporter"}; return move("menu",fill(welcome,org),data)
+            data["name"]="Pelapor anonim" if lang=="id" else "Anonymous reporter"
+            if data.get("after_identity")=="complaint_description": return move("complaint_description","Silakan ceritakan aduan Anda dalam satu pesan. Anda dapat melampirkan foto atau video." if lang=="id" else "Please describe your complaint in one message. You may attach a photo or video.",data)
+            return move("menu",fill(welcome,org),data)
         return "Balas 1 untuk membagikan nama atau 2 untuk tetap rahasia." if lang=="id" else "Reply 1 to share your name or 2 to remain anonymous."
     if step=="identity_name":
-        data={"name":body.strip()[:120] or ("Pelapor anonim" if lang=="id" else "Anonymous reporter")}; return move("menu",fill(welcome,org),data)
+        data["name"]=body.strip()[:120] or ("Pelapor anonim" if lang=="id" else "Anonymous reporter")
+        if data.get("after_identity")=="complaint_description": return move("complaint_description","Silakan ceritakan aduan Anda dalam satu pesan. Anda dapat melampirkan foto atau video." if lang=="id" else "Please describe your complaint in one message. You may attach a photo or video.",data)
+        return move("menu",fill(welcome,org),data)
     if step=="menu":
         selected=next((item for item in menu if str(item.get("key","")).upper()==command),None)
         if selected and selected.get("action")=="new":
-            prompt=("Silakan ceritakan aduan Anda dalam satu pesan. Anda dapat melampirkan foto atau video." if lang=="id" else "Please describe your complaint in one message. You may attach a photo or video.")
-            return move("complaint_description",prompt,data)
+            rows=db().execute("SELECT c.id,c.name,c.unit_id,u.name unit_name,u.officer_user_id FROM categories c LEFT JOIN units u ON u.id=c.unit_id AND u.org_id=c.org_id AND u.active=1 WHERE c.org_id=? ORDER BY c.name",(org["id"],)).fetchall(); options=[dict(row) for row in rows]
+            if not any(str(row["name"]).strip().lower()=="lainnya" for row in options): options.append({"id":None,"name":"Lainnya" if lang=="id" else "Other","unit_id":None,"unit_name":None,"officer_user_id":None})
+            data={"category_options":options}; lines=[f"{index}. {row['name']}" for index,row in enumerate(options,1)]
+            prompt=("Silakan pilih kategori atau bidang tujuan aduan:\n\n" if lang=="id" else "Please select the complaint category or destination unit:\n\n")+"\n".join(lines)+("\n\nBalas dengan nomor pilihan." if lang=="id" else "\n\nReply with the option number.")
+            return move("category_choice",prompt,data)
         if selected and selected.get("action")=="status": return move("status","Silakan kirim nomor aduan Anda, contoh: DEM-2026-00001." if lang=="id" else "Please send your complaint number, for example: DEM-2026-00001.")
         if selected and selected.get("action")=="info": return move("menu",fill(flow["service_info_id" if lang=="id" else "service_info_en"],org))
         if selected and selected.get("action")=="chat_admin":
@@ -1170,15 +1312,25 @@ def flow_reply(org,phone,body,name,attachment=None):
             if t: tid,code=t["id"],t["code"]
             else:
                 code=next_ticket_code(org); db().execute("INSERT INTO tickets(org_id,contact_id,code,subject,category) VALUES(?,?,?,?,?)",(org["id"],cid,code,"Permintaan chat dengan admin","General")); tid=db().execute("SELECT last_insert_rowid()").fetchone()[0]
-            expires=(datetime.now(timezone.utc)+timedelta(minutes=5)).strftime("%Y-%m-%d %H:%M:%S")
+            admin_timeout=max(1,min(1440,int(flow["admin_response_timeout_minutes"] or 5)))
+            expires=(datetime.now(timezone.utc)+timedelta(minutes=admin_timeout)).strftime("%Y-%m-%d %H:%M:%S")
             db().execute("UPDATE chat_requests SET status='cancelled' WHERE org_id=? AND phone=? AND status='pending'",(org["id"],phone))
             db().execute("INSERT INTO chat_requests(org_id,ticket_id,phone,language,expires_at) VALUES(?,?,?,?,?)",(org["id"],tid,phone,lang,expires))
-            create_notification(org["id"],tid,"Permintaan chat menunggu konfirmasi",f"{name or phone} menunggu petugas layanan. Konfirmasi maksimal 5 menit ({code}).")
+            create_notification(org["id"],tid,"Permintaan chat menunggu konfirmasi",f"{name or phone} menunggu petugas layanan. Konfirmasi maksimal {admin_timeout} menit ({code}).")
             db().execute("UPDATE conversation_states SET step='chat_waiting',human_takeover=1,data='{}',updated_at=CURRENT_TIMESTAMP WHERE id=?",(state["id"],)); db().commit()
-            return fill(flow["chat_waiting_id" if lang=="id" else "chat_waiting_en"],org,{"code":code})
+            return fill(flow["chat_waiting_id" if lang=="id" else "chat_waiting_en"],org,{"code":code,"chat_timeout_minutes":admin_timeout})
         if selected and selected.get("action")=="custom": return move("menu",fill(selected.get("response_id" if lang=="id" else "response_en") or selected.get("response_id") or "-",org))
         choices=", ".join(str(i.get("key")) for i in menu)
         return (f"Pilihan tidak dikenali. Balas {choices}." if lang=="id" else f"Unknown option. Reply with {choices}.")
+    if step=="category_choice":
+        options=data.get("category_options") or []
+        try: selected=options[int(command)-1] if int(command)>0 else None
+        except (ValueError,IndexError,TypeError): selected=None
+        if not selected:
+            choices=", ".join(str(index) for index in range(1,len(options)+1))
+            return (f"Pilihan kategori tidak dikenali. Balas {choices}." if lang=="id" else f"Unknown category. Reply with {choices}.")
+        data={"category":selected.get("name") or "General","unit":selected.get("unit_name"),"assignee_id":selected.get("officer_user_id"),"after_identity":"complaint_description"}
+        return move("identity_choice",fill(flow["identity_prompt_id" if lang=="id" else "identity_prompt_en"],org),data)
     if step=="status":
         t=db().execute("SELECT code,status,subject,unit,updated_at FROM tickets WHERE org_id=? AND upper(code)=upper(?)",(org["id"],body.strip())).fetchone()
         if not t: return "Nomor aduan tidak ditemukan. Periksa kembali atau ketik MENU." if lang=="id" else "Complaint number not found. Check it or type MENU."
@@ -1218,9 +1370,10 @@ def flow_reply(org,phone,body,name,attachment=None):
         if c: cid=c["id"]; db().execute("UPDATE contacts SET name=?,location=? WHERE id=?",(data["name"],data["location"],cid))
         else: db().execute("INSERT INTO contacts(org_id,name,phone,location) VALUES(?,?,?,?)",(org["id"],data["name"],phone,data["location"])); cid=db().execute("SELECT last_insert_rowid()").fetchone()[0]
         code=next_ticket_code(org)
-        db().execute("INSERT INTO tickets(org_id,contact_id,code,subject) VALUES(?,?,?,?)",(org["id"],cid,code,data["description"][:100])); tid=db().execute("SELECT last_insert_rowid()").fetchone()[0]
+        category=data.get("category") or "General"; unit=data.get("unit"); assignee_id=data.get("assignee_id")
+        db().execute("INSERT INTO tickets(org_id,contact_id,code,subject,category,unit,assignee_id) VALUES(?,?,?,?,?,?,?)",(org["id"],cid,code,data["description"][:100],category,unit,assignee_id)); tid=db().execute("SELECT last_insert_rowid()").fetchone()[0]
         media=data.get("attachment") or {}
-        db().execute("INSERT INTO messages(ticket_id,direction,body,sender,attachment_path,attachment_name,attachment_type) VALUES(?,?,?,?,?,?,?)",(tid,"in",data["description"],data["name"],media.get("path"),media.get("name"),media.get("type"))); create_notification(org["id"],tid,"Aduan WhatsApp baru",f"{data['name']}: {data['description'][:120]}"); db().execute("UPDATE conversation_states SET step='ticket_chat',data=?,human_takeover=1,updated_at=CURRENT_TIMESTAMP WHERE id=?",(json.dumps({"ticket_id":tid}),state["id"])); db().commit()
+        db().execute("INSERT INTO messages(ticket_id,direction,body,sender,attachment_path,attachment_name,attachment_type) VALUES(?,?,?,?,?,?,?)",(tid,"in",data["description"],data["name"],media.get("path"),media.get("name"),media.get("type"))); create_notification(org["id"],tid,"Aduan WhatsApp baru",f"{data['name']}: {data['description'][:120]}"); notify_assigned_users(org["id"],tid,"Aduan baru untuk bidang Anda",f"{code}: {data['description'][:120]}",unit,assignee_id); db().execute("UPDATE conversation_states SET step='ticket_chat',data=?,human_takeover=1,updated_at=CURRENT_TIMESTAMP WHERE id=?",(json.dumps({"ticket_id":tid}),state["id"])); db().commit()
         return fill(flow["completion_id" if lang=="id" else "completion_en"],org,code=code)
     return move("menu",fill(welcome,org),{})
 
@@ -1453,4 +1606,4 @@ def openwa_process():
     finally: con.hold_commit=False
 
 with app.app_context(): init_db()
-if __name__=="__main__": app.run(host="0.0.0.0",port=8080,debug=True)
+if __name__=="__main__": app.run(host="0.0.0.0",port=8080,debug=os.getenv("FLASK_DEBUG","false").lower()=="true")
