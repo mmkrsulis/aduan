@@ -1,0 +1,18 @@
+{% extends 'base.html' %}
+{% block title %}{{'Log Aktivitas' if lang=='id' else 'Activity Logs'}} · AduanHub{% endblock %}
+{% block heading %}{{'Log Aktivitas' if lang=='id' else 'Activity Logs'}}{% endblock %}
+{% block subheading %}{{'Riwayat aktivitas organisasi, terbaru terlebih dahulu.' if lang=='id' else 'Organization activity, newest first.'}}{% endblock %}
+{% block content %}
+<div class="system-page">
+<form method="get" class="system-filters">
+<label>{{'Aksi' if lang=='id' else 'Action'}}<input name="action" value="{{action}}" placeholder="user.updated"></label>
+<label>{{'ID pengguna' if lang=='id' else 'User ID'}}<input name="user" value="{{user}}" inputmode="numeric"></label>
+<button type="submit">{{'Terapkan' if lang=='id' else 'Apply'}}</button><a href="{{url_for('activity_logs')}}">{{'Reset filter' if lang=='id' else 'Reset filters'}}</a>
+</form>
+<div class="system-table" tabindex="0" role="region" aria-label="{{'Riwayat aktivitas' if lang=='id' else 'Activity history'}}"><table>
+<thead><tr>{% for label in (['Waktu','Pengguna','Aksi','Entitas','ID','Metadata aman'] if lang=='id' else ['Time','User','Action','Entity','ID','Safe metadata']) %}<th scope="col">{{label}}</th>{% endfor %}</tr></thead>
+<tbody>{% for row in logs %}<tr><td>{{localdt(row.created_at)}}</td><td>{{row.user_name or ('Sistem / dihapus' if lang=='id' else 'System / deleted')}}{% if row.user_id %} (#{{row.user_id}}){% endif %}</td><td>{{row.action}}</td><td>{{row.entity or '—'}}</td><td>{{row.entity_id if row.entity_id is not none else '—'}}</td><td><pre>{{row.safe_metadata}}</pre></td></tr>{% else %}<tr><td colspan="6">{{'Belum ada aktivitas yang cocok.' if lang=='id' else 'No matching activity.'}}</td></tr>{% endfor %}</tbody>
+</table></div>
+<nav class="system-pagination" aria-label="Pagination">{% if page>1 %}<a href="{{url_for('activity_logs',page=page-1,action=action,user=user)}}">← {{'Sebelumnya' if lang=='id' else 'Previous'}}</a>{% endif %}<span>{{page}} / {{pages}}</span>{% if page<pages %}<a href="{{url_for('activity_logs',page=page+1,action=action,user=user)}}">{{'Berikutnya' if lang=='id' else 'Next'}} →</a>{% endif %}</nav>
+</div>
+{% endblock %}

@@ -67,3 +67,28 @@ For the current host-Nginx deployment, use `deploy/nginx-aduanhub.rekadev.site.c
 ## Security before public exposure
 
 Replace `SECRET_KEY`, terminate TLS at a reverse proxy, restrict container ingress, rotate the seeded accounts, and back up the `aduan_data` volume. MPWA credentials are deployment secrets and should be migrated to a secret manager for a regulated production environment.
+
+### System monitoring and activity history
+
+Owners and admins can open **Activity Logs / Log Aktivitas** and **Connection
+Status / Status Koneksi** from the sidebar. Activity history is scoped to the
+current organization, newest first (50 entries per page), with exact action and
+user-ID filters. Structured metadata is recursively redacted for sensitive keys;
+malformed or legacy free-text metadata is hidden.
+
+Connection Status performs server-side checks with short OpenWA timeouts and
+masks the session phone number. The OpenWA worker writes its heartbeat to the
+shared database (`worker_heartbeats`); a heartbeat older than **300 seconds** is
+stale. A missing heartbeat means the worker has not yet reported. API availability,
+WhatsApp readiness, and worker freshness are separate indicators.
+
+The single OpenWA dispatcher checks for stuck initialization between dispatch
+cycles and revalidates readiness immediately before sending queued work. It only
+force-kills and starts a session after observing
+`initializing` with a nonempty phone for at least 300 seconds. QR initialization
+without a phone is left alone. Each recovery attempt resets observation and sets
+a cooldown, including failed attempts. Recovery does not replay ambiguous sends.
+
+Private deployments may supply `templates/_documentation_sop.html` to append their
+own SOP through the optional `documentation_sop` block. The public documentation
+works without that file and retains generic AduanHub branding.

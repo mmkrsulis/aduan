@@ -1,0 +1,31 @@
+/* Focused documentation and system-page refinements; inherit the app theme. */
+.docs-layout{grid-template-columns:220px minmax(0,850px);gap:22px}
+.docs-nav{top:20px;max-height:calc(100vh - 40px);overflow:auto}
+.docs-nav a{font-size:12px;line-height:1.5;padding:10px}
+.docs-nav a[aria-current="location"]{background:var(--soft);color:var(--text);font-weight:700;box-shadow:inset 3px 0 var(--accent)}
+.docs-hero{padding:24px;gap:16px;box-shadow:none}
+.docs-hero h2{font-size:clamp(20px,2.2vw,27px);line-height:1.25;letter-spacing:-.025em}
+.docs-hero p{max-width:58ch;font-size:14px}
+.docs-meta{font-size:11px;min-width:90px;line-height:1.6}
+.docs-section{grid-template-columns:38px minmax(0,1fr);gap:16px;padding:24px;box-shadow:none;scroll-margin-top:24px}
+.docs-section h3{font-size:18px;line-height:1.4;margin:4px 0 14px}
+.docs-section li{font-size:14px;line-height:1.75;color:var(--text);padding:4px 0}
+.docs-number{font-size:12px}
+.docs-note{font-size:13px;line-height:1.7}
+.docs-section .checklist label{font-size:14px;line-height:1.6;display:flex;align-items:baseline;gap:8px}
+.docs-section .checklist input{flex:none}
+.docs-layout :focus-visible,.system-page :focus-visible{outline:3px solid var(--accent);outline-offset:3px}
+.system-page{min-width:0;line-height:1.6}
+.system-filters{display:flex;align-items:end;gap:16px;flex-wrap:wrap;margin-bottom:20px}
+.system-filters label{display:grid;gap:6px}
+.system-table{overflow:auto;border:1px solid var(--line);border-radius:12px;background:var(--panel)}
+.system-table table{width:100%;border-collapse:collapse}
+.system-table th,.system-table td{padding:12px;text-align:left;vertical-align:top;border-bottom:1px solid var(--line)}
+.system-table pre{white-space:pre-wrap;overflow-wrap:anywhere;min-width:180px;max-width:460px;font-size:12px;margin:0}
+.system-pagination{display:flex;gap:24px;justify-content:center;padding:20px}
+.system-checks{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px;margin-top:20px}
+.system-check{padding:20px;border:1px solid var(--line);border-radius:12px;background:var(--panel)}
+.system-check h2{font-size:15px;margin:0;color:var(--muted)}
+.system-state{font-size:20px;font-weight:700;margin:12px 0}
+@media(max-width:850px){.docs-layout{grid-template-columns:minmax(0,1fr)}.docs-nav{position:static;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));max-height:none}.docs-nav>span{grid-column:1/-1}}
+@media(max-width:560px){.docs-hero{padding:20px}.docs-section{grid-template-columns:minmax(0,1fr);padding:20px;gap:10px}.docs-nav a{font-size:11px}.system-filters label{width:100%}}

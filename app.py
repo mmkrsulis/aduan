@@ -10,6 +10,7 @@ from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
 from cryptography.fernet import Fernet, InvalidToken
 import requests
 import delivery
+import system_status
 from zoneinfo import ZoneInfo
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4, landscape
@@ -365,11 +366,11 @@ def notify_assigned_users(org_id,ticket_id,title,body,unit=None,assignee_id=None
 @app.context_processor
 def ctx():
     unread=0
-    if session.get("org_id"):
+    if session.get("org_id") and not getattr(g, "system_database_unavailable", False):
         if is_central_admin(): unread=db().execute("SELECT count(*) FROM notifications WHERE org_id=? AND read_at IS NULL AND (user_id IS NULL OR user_id=?)",(session["org_id"],session.get("uid"))).fetchone()[0]
         else: unread=db().execute("SELECT count(*) FROM notifications WHERE org_id=? AND user_id=? AND read_at IS NULL",(session["org_id"],session.get("uid"))).fetchone()[0]
     brand=None
-    if session.get("org_id"): brand=db().execute("SELECT name,app_name,logo,icon,accent,terminology,timezone,notification_sound,notification_sound_enabled FROM organizations WHERE id=?",(session["org_id"],)).fetchone()
+    if session.get("org_id") and not getattr(g, "system_database_unavailable", False): brand=db().execute("SELECT name,app_name,logo,icon,accent,terminology,timezone,notification_sound,notification_sound_enabled FROM organizations WHERE id=?",(session["org_id"],)).fetchone()
     def localdt(value):
         if not value: return "-"
         try:
@@ -922,20 +923,37 @@ def whatsapp_test_send():
 @login_required
 @roles('owner','admin')
 def whatsapp_qr():
+    status_url=f"{OPENWA_CONTROL_URL}/api/sessions/{OPENWA_SESSION_ID}"
     qr_url=f"{OPENWA_CONTROL_URL}/api/sessions/{OPENWA_SESSION_ID}/qr"
     session_url=f"{OPENWA_CONTROL_URL}/api/sessions/{OPENWA_SESSION_ID}/start"
     headers={"X-API-Key":OPENWA_API_KEY}
     try:
+        status_response=requests.get(status_url,headers=headers,timeout=(2,3))
+        status_response.raise_for_status()
+        status_payload=status_response.json()
+        if not isinstance(status_payload,dict): raise ValueError('Invalid OpenWA status')
+        if status_payload.get('status') in ('ready','connected'):
+            return jsonify(error='WhatsApp sudah terhubung. QR tidak diperlukan.'),409
+        if status_payload.get('status') not in ('disconnected','stopped','failed','qr','scanner'):
+            return jsonify(error='Status sesi OpenWA belum aman untuk membuat QR.'),409
         response=requests.get(qr_url,headers=headers,timeout=6)
         if getattr(response,"status_code",200)==400 and "not started" in getattr(response,"text","").lower():
+            status_response=requests.get(status_url,headers=headers,timeout=(2,3))
+            status_response.raise_for_status()
+            status_payload=status_response.json()
+            if not isinstance(status_payload,dict): raise ValueError('Invalid OpenWA status')
+            if status_payload.get('status') in ('ready','connected'):
+                return jsonify(error='WhatsApp sudah terhubung. QR tidak diperlukan.'),409
+            if status_payload.get('status') not in ('disconnected','stopped','failed','qr','scanner'):
+                return jsonify(error='Status sesi OpenWA belum aman untuk membuat QR.'),409
             started=requests.post(session_url,headers=headers,timeout=30)
             if not started.ok: return jsonify(error='Sesi OpenWA gagal dijalankan.'),502
             for _ in range(12):
                 time.sleep(.5)
                 response=requests.get(qr_url,headers=headers,timeout=6)
                 if response.ok: break
-    except requests.RequestException:
-        return jsonify(error='QR OpenWA belum tersedia.'),503
+    except (requests.RequestException,ValueError,TypeError):
+        return jsonify(error='Status sesi OpenWA tidak dapat dipastikan; QR tidak dibuat.'),503
     try:
         if response.ok and hasattr(response,'json'):
             encoded=response.json().get('qrCode','')
@@ -1226,6 +1244,62 @@ def chat_widget_approve(chat_id):
     db().execute("UPDATE notifications SET read_at=CURRENT_TIMESTAMP WHERE org_id=? AND ticket_id=? AND read_at IS NULL",(session['org_id'],chat['ticket_id']))
     audit('chat.approved','ticket',chat['ticket_id'],{'source':'chat_widget'}); db().commit()
     return jsonify(ok=True,ticket_id=chat['ticket_id'],code=chat['code'])
+
+@app.get("/activity-logs")
+@login_required
+@roles("owner", "admin")
+def activity_logs():
+    page = max(1, request.args.get('page', 1, type=int))
+    action = request.args.get('action', '').strip()[:200]
+    user = request.args.get('user', '', type=str).strip()[:200]
+    where = ['a.org_id=?']
+    params = [session['org_id']]
+    if action:
+        where.append('a.action=?'); params.append(action)
+    if user:
+        where.append('a.user_id=?'); params.append(user)
+    clause = ' AND '.join(where)
+    total = db().execute('SELECT count(*) FROM audit_logs a WHERE '+clause, params).fetchone()[0]
+    pages = max(1, (total+49)//50)
+    page = min(page, pages)
+    rows = db().execute('SELECT a.*,u.name user_name FROM audit_logs a LEFT JOIN users u ON u.id=a.user_id AND u.org_id=a.org_id WHERE '+clause+' ORDER BY a.created_at DESC,a.id DESC LIMIT 50 OFFSET ?', params+[(page-1)*50]).fetchall()
+    logs = [dict(row, safe_metadata=system_status.safe_metadata(row['metadata'])) for row in rows]
+    return render_template('activity_logs.html', logs=logs, page=page, pages=pages, action=action, user=user)
+
+
+@app.get("/connection-status")
+@login_required
+@roles("owner", "admin")
+def connection_status():
+    checks = {'app': 'ok', 'database': 'ok', 'api': 'unavailable', 'session': 'unknown', 'phone': '—', 'worker': 'missing'}
+    age = None
+    try:
+        db().execute('SELECT 1').fetchone()
+        row = db().execute("SELECT updated_at FROM worker_heartbeats WHERE worker='openwa'").fetchone()
+        if row:
+            age = max(0, int(time.time()-row['updated_at']))
+            checks['worker'] = 'fresh' if age <= system_status.HEARTBEAT_STALE_SECONDS else 'stale'
+    except (sqlite3.Error, ValueError, TypeError, OverflowError):
+        checks.update(database='unavailable', worker='unknown')
+        g.system_database_unavailable = True
+    try:
+        response = requests.get(f"{OPENWA_CONTROL_URL}/api/sessions/{OPENWA_SESSION_ID}", headers={'X-API-Key': OPENWA_API_KEY}, timeout=(2, 3))
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise ValueError('Invalid status')
+        checks['api'] = 'ok'
+        status = payload.get('status')
+        checks['session'] = status if status in ('ready', 'initializing', 'disconnected', 'stopped', 'failed', 'qr', 'starting', 'connected') else 'unknown'
+        phone = normalize_whatsapp(payload.get('phone'))
+        if phone:
+            checks['phone'] = '•'*(len(phone)-3)+phone[-3:]
+    except (requests.RequestException, ValueError, TypeError):
+        pass
+    response = app.make_response(render_template('connection_status.html', checks=checks, age=age, stale_seconds=system_status.HEARTBEAT_STALE_SECONDS))
+    response.headers['Cache-Control'] = 'no-store'
+    return response
+
 
 @app.get("/documentation")
 @login_required

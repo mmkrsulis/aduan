@@ -3,7 +3,7 @@
 {% block heading %}{{tr('Workspace settings')}}{% endblock %}
 {% block subheading %}{{tr('Brand and connect this deployment to your WhatsApp gateway')}}{% endblock %}
 {% block content %}
-{% if section=='whatsapp' %}<script defer src="{{url_for('static',filename='whatsapp-wizard.js',v='20260903-1')}}"></script><style>.wa-qr-footer{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 18px;border-top:1px solid var(--line)}.wa-qr-footer .wa-qr-status{flex:1;padding:0;border:0;text-align:left}.wa-qr-footer button{flex:none;min-width:112px}@media(max-width:460px){.wa-qr-footer{align-items:stretch;flex-direction:column}.wa-qr-footer button{width:100%}}</style>{% endif %}
+{% if section=='whatsapp' %}<script defer src="{{url_for('static',filename='whatsapp-wizard.js',v='20260929-1')}}"></script><style>.wa-qr-footer{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 18px;border-top:1px solid var(--line)}.wa-qr-footer .wa-qr-status{flex:1;padding:0;border:0;text-align:left}.wa-qr-footer button{flex:none;min-width:112px}@media(max-width:460px){.wa-qr-footer{align-items:stretch;flex-direction:column}.wa-qr-footer button{width:100%}}</style>{% endif %}
 <div class="settings-shell">
   <form method="post" class="settings-form" enctype="multipart/form-data">
     <input type="hidden" name="section" value="{{section}}">

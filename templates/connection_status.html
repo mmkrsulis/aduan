@@ -1,0 +1,14 @@
+{% extends 'base.html' %}
+{% block title %}{{'Status Koneksi' if lang=='id' else 'Connection Status'}} · AduanHub{% endblock %}
+{% block heading %}{{'Status Koneksi' if lang=='id' else 'Connection Status'}}{% endblock %}
+{% block subheading %}{{'Pemeriksaan server saat halaman dibuka.' if lang=='id' else 'Server checks performed when this page loads.'}}{% endblock %}
+{% block content %}
+<div class="system-page">
+<p>{{'Heartbeat worker dianggap kedaluwarsa setelah' if lang=='id' else 'Worker heartbeat is stale after'}} {{stale_seconds}} {{'detik. Status API tidak menjamin WhatsApp siap mengirim.' if lang=='id' else 'seconds. API availability does not guarantee WhatsApp is ready to send.'}}</p>
+<div class="system-checks">
+{% set labels={'app':'Aplikasi / App','database':'Database','api':'OpenWA API','session':'WhatsApp session','worker':'Worker heartbeat'} %}
+{% set states={'ok':'Tersedia','unavailable':'Tidak tersedia','unknown':'Tidak diketahui','missing':'Belum ada heartbeat','fresh':'Aktif','stale':'Kedaluwarsa','ready':'Siap','initializing':'Inisialisasi','disconnected':'Terputus','stopped':'Berhenti','failed':'Gagal','qr':'Menunggu QR','starting':'Memulai','connected':'Terhubung'} %}
+{% for key,label in labels.items() %}<section class="system-check"><h2>{{label}}</h2><p class="system-state" data-state="{{checks[key]}}">{{states.get(checks[key],checks[key]) if lang=='id' else checks[key]}}</p>{% if key=='session' %}<p>{{'Nomor' if lang=='id' else 'Phone'}}: {{checks.phone}}</p>{% elif key=='worker' and age is not none %}<p>{{age}} {{'detik sejak heartbeat terakhir' if lang=='id' else 'seconds since last heartbeat'}}</p>{% endif %}</section>{% endfor %}
+</div><p><a href="{{url_for('connection_status')}}">{{'Periksa ulang' if lang=='id' else 'Check again'}}</a></p>
+</div>
+{% endblock %}

@@ -7,10 +7,53 @@ import sqlite3
 import time
 import requests
 import delivery
+import system_status
 import json
 from urllib.parse import quote
 
 logging.basicConfig(level=logging.INFO,format='%(asctime)s %(levelname)s %(message)s')
+
+def recover_stuck_session(state, now=None, threshold=300):
+    """Observe continuous authenticated initialization; rate-limit even failed recovery.
+
+    Called only between dispatches by the single worker. Never replay queued or
+    ambiguous sends, and never interfere with an unauthenticated QR session.
+    """
+    now = time.monotonic() if now is None else now
+    threshold = max(1, threshold)
+    state['observed_status'] = None
+    try:
+        base = os.environ['OPENWA_URL'].rstrip('/')
+        sid = os.environ['OPENWA_SESSION_ID']
+        headers = {'X-API-Key': os.environ['WA_API_KEY']}
+        url = f'{base}/api/sessions/{sid}'
+        response = requests.get(url, headers=headers, timeout=(2, 3))
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise ValueError('Invalid session status')
+        status = payload.get('status')
+        state['observed_status'] = status
+        phone = payload.get('phone')
+        if status != 'initializing' or not isinstance(phone, str) or not phone.strip():
+            state.pop('initializing_since', None)
+            return False
+        since = state.setdefault('initializing_since', now)
+        if now - since < threshold or now < state.get('cooldown_until', 0):
+            return False
+        # Set before either POST: a timeout may mean the operation succeeded.
+        state['cooldown_until'] = now + threshold
+        state.pop('initializing_since', None)
+        for operation in ('force-kill', 'start'):
+            response = requests.post(f'{url}/{operation}', headers=headers, timeout=(2, 3))
+            response.raise_for_status()
+        logging.warning('Recovered authenticated OpenWA session stuck initializing')
+        return True
+    except (requests.RequestException, ValueError, TypeError, KeyError):
+        state.pop('initializing_since', None)
+        logging.warning('OpenWA recovery check failed; retry deferred')
+        return False
+
 
 def call(method,args=None):
     base=os.environ['OPENWA_URL'].rstrip('/'); sid=os.environ['OPENWA_SESSION_ID']
@@ -135,6 +178,17 @@ def dispatch(con):
         con.commit()
         logging.warning('Message %s dispatch uncertain; not retried',row['id'])
 
+
+def dispatch_ready_work(con, state, now=None):
+    """Observe/recover the session, but submit queued work only when explicitly ready."""
+    recovered = recover_stuck_session(state, now=now)
+    if recovered or state.get('observed_status') != 'ready':
+        return False
+    dispatch_system(con)
+    dispatch(con)
+    return True
+
+
 def main():
     con=sqlite3.connect(os.environ['DATABASE_PATH'],timeout=30)
     con.row_factory=sqlite3.Row
@@ -142,10 +196,17 @@ def main():
     con.execute("UPDATE messages SET delivery_status='unknown',delivery_error='Worker terhenti saat mengirim. Periksa WhatsApp.' WHERE delivery_gateway='openwa' AND delivery_status='sending'")
     con.execute("UPDATE openwa_system_outbox SET status='unknown' WHERE status='sending'")
     con.commit()
+    recovery_state={}
     last_registration=0
     reconcile_cursor=0
     while True:
         try:
+            system_status.heartbeat(con)
+            tick=time.monotonic()
+            if recover_stuck_session(recovery_state,now=tick):
+                # Give the restarted session a cycle before processing work.
+                time.sleep(2)
+                continue
             if time.monotonic()-last_registration>30:
                 register()
                 last_registration=time.monotonic()
@@ -164,8 +225,7 @@ def main():
                     reconcile_cursor=0
             try: process_incoming(con)
             except (requests.RequestException,ValueError): logging.warning('Incoming processing unavailable; retained for retry')
-            dispatch_system(con)
-            dispatch(con)
+            dispatch_ready_work(con,recovery_state)
         except Exception:
             logging.warning('Gateway/listener unavailable; queued messages retained')
         time.sleep(2)

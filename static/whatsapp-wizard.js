@@ -39,8 +39,8 @@
     qrImage.onerror=()=>{if(qrRestart)busy(qrRestart,false);qrLoading.hidden=false;qrImage.hidden=true;qrStatus.textContent=id?'QR belum siap. Mencoba kembali otomatis…':'QR is not ready. Retrying automatically…';qrTimer=setTimeout(refreshQr,2500)};
     qrImage.src=`${wizard.dataset.qrUrl}?t=${Date.now()}`;
   };
-  const watchQrStatus=async()=>{if(!qrDialog?.open)return;const state=await status(true);if(state.connected){announce(id?`WhatsApp ${formatPhone(state.phone)} berhasil terhubung.`:`WhatsApp ${formatPhone(state.phone)} connected successfully.`,'success');return}qrStatusTimer=setTimeout(watchQrStatus,1500)};
-  const openQr=()=>{if(!qrDialog)return;if(typeof qrDialog.showModal==='function'){if(!qrDialog.open)qrDialog.showModal()}else qrDialog.setAttribute('open','');refreshQr();clearTimeout(qrStatusTimer);qrStatusTimer=setTimeout(watchQrStatus,800)};
+  const watchQrStatus=async()=>{if(!qrDialog?.open)return;const state=await status(true);if(state?.connected){announce(id?`WhatsApp ${formatPhone(state.phone)} berhasil terhubung.`:`WhatsApp ${formatPhone(state.phone)} connected successfully.`,'success');return}qrStatusTimer=setTimeout(watchQrStatus,1500)};
+  const openQr=async()=>{if(!qrDialog)return;const state=await status(true);if(!state){announce(id?'Status koneksi tidak dapat dipastikan. QR tidak dibuka.':'Connection status could not be confirmed. The QR scanner was not opened.','error');return}if(state.connected){announce(id?'WhatsApp sudah terhubung. QR tidak diperlukan.':'WhatsApp is already connected. No QR code is required.','success');return}if(!state.scanner_ready){announce(id?'Pemindai QR belum siap. Coba lagi setelah status koneksi tersedia.':'The QR scanner is not ready. Try again when connection status is available.','error');return}if(typeof qrDialog.showModal==='function'){if(!qrDialog.open)qrDialog.showModal()}else qrDialog.setAttribute('open','');refreshQr();clearTimeout(qrStatusTimer);qrStatusTimer=setTimeout(watchQrStatus,800)};
 
   async function status(silent=false){
     if(!silent){busy(refresh,true);announce(id?'Memeriksa koneksi OpenWA…':'Checking OpenWA connection…')}
@@ -60,7 +60,7 @@
       badge.classList.add('offline');badgeText.textContent=id?'Menunggu QR':'Waiting for QR';disconnect.disabled=true;
       detail.textContent=id?'API belum aktif; ini normal ketika QR sedang ditampilkan.':'The API is unavailable while the QR scanner is active.';
       if(!silent)announce(id?'Buka pemindai QR untuk melanjutkan.':'Open the QR scanner to continue.');
-      return {connected:false};
+      return null;
     }finally{busy(refresh,false)}
   }
 
@@ -100,7 +100,7 @@
       number.textContent='—';badge.classList.add('offline');badgeText.textContent=id?'Menunggu QR':'Waiting for QR';
       let ready=false;
       for(let attempt=0;attempt<45&&!ready;attempt++){
-        const state=await status(true);ready=Boolean(state.scanner_ready);
+        const state=await status(true);ready=Boolean(state?.scanner_ready);
         if(!ready)await delay(1000);
       }
       if(!ready)throw Error(id?'Pemindai QR belum siap. Gunakan tombol “Buka pemindai QR” untuk mencoba kembali.':'QR scanner is not ready. Use the Open QR scanner button to retry.');

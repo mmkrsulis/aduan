@@ -3,6 +3,7 @@ import os
 import sqlite3
 import secrets
 import re
+import system_status
 
 class Connection(sqlite3.Connection):
     hold_commit = False
@@ -41,6 +42,7 @@ def enabled():
     return os.getenv('OPENWA_DELIVERY', '').lower() == 'true'
 
 def migrate(con):
+    system_status.migrate(con)
     columns = {r[1] for r in con.execute('PRAGMA table_info(messages)')}
     for name, kind in {'delivery_gateway':'TEXT', 'client_token':'TEXT', 'delivery_ack':'INTEGER', 'delivery_error':'TEXT'}.items():
         if name not in columns:

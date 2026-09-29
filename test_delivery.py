@@ -3,6 +3,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 import requests
+from pathlib import Path
 
 TEMP = tempfile.TemporaryDirectory()
 os.environ.update(DATABASE_PATH=TEMP.name+'/test.db',OPENWA_DELIVERY='true',WEBHOOK_SECRET='test-secret',SECRET_KEY='test-session-key')
@@ -58,6 +59,83 @@ class DeliveryTests(unittest.TestCase):
         with patch.object(openwa_worker,'call',return_value='true_test') as gateway:
             openwa_worker.dispatch(self.con); openwa_worker.dispatch(self.con)
             gateway.assert_called_once_with('sendText',{'to':'628111111111@c.us','content':'Hello'})
+
+    def test_main_revalidates_readiness_after_registration_before_dispatch(self):
+        self.send()
+        status={'value':'ready'}
+        response=type('Response',(),{
+            'raise_for_status':lambda self:None,
+            'json':lambda self:{'status':status['value'],'phone':'628123456789'},
+        })()
+        class StopLoop(BaseException):
+            pass
+        def register():
+            status['value']='initializing'
+            return True
+        environment={'OPENWA_URL':'http://openwa-core:2785','OPENWA_SESSION_ID':'session-id','WA_API_KEY':'test-key'}
+        with patch.dict(os.environ,environment), \
+             patch.object(openwa_worker.sqlite3,'connect',return_value=self.con), \
+             patch.object(openwa_worker.system_status,'heartbeat'), \
+             patch.object(openwa_worker.requests,'get',return_value=response), \
+             patch.object(openwa_worker,'register',side_effect=register), \
+             patch.object(openwa_worker,'process_incoming'), \
+             patch.object(openwa_worker,'dispatch_system') as dispatch_system, \
+             patch.object(openwa_worker,'dispatch') as dispatch, \
+             patch.object(openwa_worker.time,'monotonic',return_value=100), \
+             patch.object(openwa_worker.time,'sleep',side_effect=StopLoop):
+            with self.assertRaises(StopLoop):
+                openwa_worker.main()
+        dispatch_system.assert_not_called()
+        dispatch.assert_not_called()
+        self.assertEqual(self.con.execute('SELECT delivery_status FROM messages').fetchone()[0],'queued')
+
+    def test_worker_keeps_queue_blocked_until_restarted_session_is_ready(self):
+        self.send()
+        statuses=[
+            {'status':'initializing','phone':'628123456789'},
+            {'status':'initializing','phone':'628123456789'},
+            {'status':'initializing','phone':'628123456789'},
+            {'status':'ready','phone':'628123456789'},
+        ]
+        responses=[type('Response',(),{'raise_for_status':lambda self:None,'json':lambda self,payload=payload:payload})() for payload in statuses]
+        environment={'OPENWA_URL':'http://openwa-core:2785','OPENWA_SESSION_ID':'session-id','WA_API_KEY':'test-key'}
+        state={}
+        with patch.dict(os.environ,environment), patch.object(openwa_worker.requests,'get',side_effect=responses), patch.object(openwa_worker.requests,'post') as post, patch.object(openwa_worker,'call',return_value='true_test') as send:
+            for now in (100,401,402):
+                openwa_worker.dispatch_ready_work(self.con,state,now=now)
+                self.assertEqual(self.con.execute('SELECT delivery_status FROM messages').fetchone()[0],'queued')
+                send.assert_not_called()
+            openwa_worker.dispatch_ready_work(self.con,state,now=403)
+        self.assertEqual([request.args[0] for request in post.call_args_list],[
+            'http://openwa-core:2785/api/sessions/session-id/force-kill',
+            'http://openwa-core:2785/api/sessions/session-id/start'])
+        send.assert_called_once_with('sendText',{'to':'628111111111@c.us','content':'Hello'})
+        self.assertEqual(self.con.execute('SELECT delivery_status FROM messages').fetchone()[0],'pending')
+
+    def test_watchdog_recovers_authenticated_session_stuck_initializing(self):
+        initializing={'status':'initializing','phone':'628123456789'}
+        ready={'status':'ready','phone':'628123456789'}
+        responses=[type('Response',(),{'raise_for_status':lambda self:None,'json':lambda self:initializing})(),
+                   type('Response',(),{'raise_for_status':lambda self:None,'json':lambda self:initializing})(),
+                   type('Response',(),{'raise_for_status':lambda self:None,'json':lambda self:ready})()]
+        environment={'OPENWA_URL':'http://openwa-core:2785','OPENWA_SESSION_ID':'session-id','WA_API_KEY':'test-key'}
+        state={}
+        with patch.dict(os.environ,environment),patch.object(openwa_worker.requests,'get',side_effect=responses),patch.object(openwa_worker.requests,'post') as post:
+            self.assertFalse(openwa_worker.recover_stuck_session(state,now=100,threshold=300))
+            self.assertTrue(openwa_worker.recover_stuck_session(state,now=401,threshold=300))
+            self.assertFalse(openwa_worker.recover_stuck_session(state,now=402,threshold=300))
+        self.assertEqual([request.args[0] for request in post.call_args_list],[
+            'http://openwa-core:2785/api/sessions/session-id/force-kill',
+            'http://openwa-core:2785/api/sessions/session-id/start'])
+
+    def test_watchdog_does_not_interrupt_new_qr_session(self):
+        response=type('Response',(),{'raise_for_status':lambda self:None,'json':lambda self:{'status':'initializing','phone':None}})()
+        environment={'OPENWA_URL':'http://openwa-core:2785','OPENWA_SESSION_ID':'session-id','WA_API_KEY':'test-key'}
+        with patch.dict(os.environ,environment),patch.object(openwa_worker.requests,'get',return_value=response),patch.object(openwa_worker.requests,'post') as post:
+            state={}
+            self.assertFalse(openwa_worker.recover_stuck_session(state,now=100,threshold=300))
+            self.assertFalse(openwa_worker.recover_stuck_session(state,now=500,threshold=300))
+        post.assert_not_called()
 
     def test_timeout_never_replayed(self):
         self.send()
@@ -124,13 +202,42 @@ class DeliveryTests(unittest.TestCase):
         invalid=self.client.post('/settings/whatsapp/test-send',json={'phone':'123'},headers={'X-CSRF-Token':'csrf-test'})
         self.assertEqual(invalid.status_code,400)
 
-    def test_whatsapp_qr_is_proxied_without_cache(self):
+    def test_whatsapp_qr_is_proxied_without_cache_when_disconnected(self):
+        status=type('StatusResponse',(),{'raise_for_status':lambda self:None,'json':lambda self:{'status':'disconnected','phone':None}})()
         gateway=type('QrResponse',(),{'ok':True,'headers':{'Content-Type':'image/png'},'content':b'\x89PNG\r\n\x1a\nqr'})()
-        with patch.object(application.requests,'get',return_value=gateway):
+        with patch.object(application.requests,'get',side_effect=[status,gateway]) as get:
             response=self.client.get('/settings/whatsapp/qr')
         self.assertEqual(response.status_code,200)
         self.assertEqual(response.mimetype,'image/png')
         self.assertEqual(response.headers['Cache-Control'],'no-store, max-age=0')
+        self.assertEqual(get.call_count,2)
+
+    def test_whatsapp_qr_refuses_connected_session_before_qr_retrieval(self):
+        connected=type('StatusResponse',(),{'raise_for_status':lambda self:None,'json':lambda self:{'status':'ready','phone':'628123456789'}})()
+        with patch.object(application.requests,'get',return_value=connected) as get, patch.object(application.requests,'post') as post:
+            response=self.client.get('/settings/whatsapp/qr')
+        self.assertEqual(response.status_code,409)
+        self.assertEqual(response.json['error'],'WhatsApp sudah terhubung. QR tidak diperlukan.')
+        self.assertEqual(get.call_count,1)
+        post.assert_not_called()
+
+    def test_whatsapp_qr_rechecks_guard_before_starting_session(self):
+        disconnected=type('StatusResponse',(),{'raise_for_status':lambda self:None,'json':lambda self:{'status':'disconnected','phone':None}})()
+        missing=type('QrResponse',(),{'status_code':400,'text':'session not started','ok':False})()
+        connected=type('StatusResponse',(),{'raise_for_status':lambda self:None,'json':lambda self:{'status':'ready','phone':'628123456789'}})()
+        with patch.object(application.requests,'get',side_effect=[disconnected,missing,connected]) as get, patch.object(application.requests,'post') as post:
+            response=self.client.get('/settings/whatsapp/qr')
+        self.assertEqual(response.status_code,409)
+        self.assertEqual(get.call_count,3)
+        post.assert_not_called()
+
+    def test_whatsapp_scanner_fails_closed_when_status_is_unknown(self):
+        script=(Path(application.__file__).parent/'static'/'whatsapp-wizard.js').read_text()
+        self.assertIn('const state=await status(true);if(!state)',script)
+        self.assertIn("return null",script)
+        self.assertIn('Status koneksi tidak dapat dipastikan. QR tidak dibuka.',script)
+        self.assertIn('state.scanner_ready',script)
+        self.assertIn('WhatsApp sudah terhubung. QR tidak diperlukan.',script)
 
     def test_openwa_media_download_uses_archived_message_endpoint(self):
         gateway=type('MediaResponse',(),{'headers':{'Content-Type':'image/jpeg'},'content':b'jpeg-bytes','raise_for_status':lambda self:None})()
